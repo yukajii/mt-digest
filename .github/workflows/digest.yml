@@ -22,6 +22,9 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           BUTTONDOWN_TOKEN: ${{ secrets.BUTTONDOWN_TOKEN }}
         run: |
-          python mt_arxiv_digest.py 2025-05-07          # yesterday by default
-          FILE=$(ls mt_digest_*.md | tail -n1)
-          python send_digest.py $FILE
+          DATE="2025-05-07"                     # ← or compute yesterday automatically
+          python mt_arxiv_digest.py "$DATE"
+
+          FILE="mt_digest_${DATE}.md"           # use the same DATE
+          python send_digest.py "$FILE"
+
