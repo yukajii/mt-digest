@@ -29,30 +29,42 @@ headers = {
     "Content-Type": "application/json",
 }
 
-# 1) Create draft
+# ---------- 1) Create draft ----------
+payload = {
+    "subject": subject,
+    "body": md_path.read_text("utf-8"),
+    "markdown": True,
+    "publish_url": False,
+}
+
 draft = requests.post(
     "https://api.buttondown.email/v1/emails",
     headers=headers,
     data=json.dumps(payload),
-    timeout=30
+    timeout=30,
 )
 
 if not draft.ok:
     print("⚠️  Draft creation failed")
-    print("Status:", draft.status_code)
-    print("Body:", draft.text)
+    print("Status :", draft.status_code)
+    print("Body   :", draft.text)
     sys.exit(1)
 
 email_id = draft.json()["id"]
 print("✓ Draft created:", email_id)
 
-
-# 2) Send draft to all subscribers
+# ---------- 2) Send to list ----------
 send_resp = requests.post(
     f"https://api.buttondown.email/v1/emails/{email_id}/send-draft",
     headers=headers,
-    data=json.dumps({}),   # empty body = send to full list
-    timeout=30
+    data=json.dumps({}),      # empty → send to full list
+    timeout=30,
 )
-send_resp.raise_for_status()
-print("✓ Sent to subscribers at", datetime.datetime.utcnow(), "UTC")
+
+if not send_resp.ok:
+    print("⚠️  Send-draft failed")
+    print("Status :", send_resp.status_code)
+    print("Body   :", send_resp.text)
+    sys.exit(1)
+
+print("✓ Sent to subscribers")
