@@ -1,0 +1,27 @@
+name: MT Digest (manual)
+
+on:
+  workflow_dispatch:    # shows a green “Run workflow” button in Actions
+
+jobs:
+  build_send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+
+      - name: Generate digest & send
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          BUTTONDOWN_TOKEN: ${{ secrets.BUTTONDOWN_TOKEN }}
+        run: |
+          python mt_arxiv_digest.py           # yesterday by default
+          FILE=$(ls mt_digest_*.md | tail -n1)
+          python send_digest.py $FILE
