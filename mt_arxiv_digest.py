@@ -2,26 +2,19 @@
 """
 mt_arxiv_digest.py  – daily digest generator for MT‑centric cs.CL papers
 
-❖ New in 2025‑05‑24
-───────────────────
-* **Engaging Preface.** After selecting papers, we now call a *second* (usually stronger)
-  OpenAI model to draft a 2‑to‑3‑sentence intro that:
-    ▸ highlights the day’s common themes                      
-    ▸ comments on how practical & MT‑relevant the selection is           
-    ▸ mentions if the set is weakly related but still useful.
-  The text is inserted right under the title in the Markdown.
-* **Two‑stage LLM usage recorded** – token counts & raw replies for **both** calls
-  go into the per‑run log.
-* **Minor** – cost estimate (USD) in the log, cooler CLI via *argparse*.
-
-Usage
-─────
-$ python mt_arxiv_digest.py                 # yesterday (UTC), keep 5 papers
-$ python mt_arxiv_digest.py --date 2025-05-22 --max 7
-
-Produces:
-  •  `mt_digest_YYYY‑MM‑DD.md`   – newsletter‑ready Markdown
-  •  `logs/mt_digest_YYYY‑MM‑DD.log` – full audit trail
+Version 2025‑05‑25
+──────────────────
+* **CLI compatibility:** works with any of these call styles now –
+     `python mt_arxiv_digest.py`                        # yesterday (default)
+     `python mt_arxiv_digest.py 2025-05-13`            # positional date
+     `python mt_arxiv_digest.py --date 2025-05-13`     # flag style
+     `python mt_arxiv_digest.py --max 7`               # pick 7 papers
+  Action workflows that set an env var can simply do `DATE=YYYY-MM-DD` and
+  call the script without args.
+* **DATE env‑var support** – if no CLI date is provided, the script checks
+  `DATE` in the environment before falling back to “yesterday UTC”.
+* No functional changes elsewhere – preface generation, logging, token–cost
+  tracking all stay the same.
 """
 
 from __future__ import annotations
@@ -32,9 +25,9 @@ import arxiv, openai
 # ── CONSTANTS ────────────────────────────────────────────────────────────────
 MAX_RESULTS = 100
 DEFAULT_MAX_PICKS = 5
-SELECT_MODEL   = "gpt-4o-mini"   # fast / cheap for classification
-PREFACE_MODEL  = "gpt-4o"        # higher‑quality style generation
-USD_PER_TOKEN  = 0.000005        # adjust to your pricing tier
+SELECT_MODEL   = "gpt-4o-mini"              # fast / cheap for classification
+PREFACE_MODEL  = "gpt-4o"                   # nicer prose for intro
+USD_PER_TOKEN  = 0.000005                   # adjust to your pricing tier
 
 BASE_DIR = pathlib.Path(__file__).parent
 LOG_DIR  = BASE_DIR / "logs"
@@ -49,6 +42,7 @@ warnings.filterwarnings(
 # ── HELPERS ──────────────────────────────────────────────────────────────────
 
 def fetch_cscl(date: dt.date) -> List[Dict]:
+    """Return list of cs.CL arXiv entries for that UTC calendar date."""
     day = date.strftime("%Y%m%d")
     query = f'cat:cs.CL AND submittedDate:[{day}0000 TO {day}2359]'
     search = arxiv.Search(query=query, max_results=MAX_RESULTS,
@@ -108,7 +102,6 @@ def pick_mt_papers(papers: List[Dict], max_picks: int) -> Tuple[List[int], str, 
 
 def draft_preface(date: dt.date, papers: List[Dict], picks: List[int]) -> Tuple[str, str, Dict]:
     chosen = [papers[i-1] for i in picks] if picks else []
-    # Build a mini‑catalogue of chosen titles only (keeps tokens low)
     titles_block = "\n".join(f"• {p['title']}" for p in chosen) or "(no MT‑specific papers today)"
 
     user_msg = textwrap.dedent(f"""
@@ -152,17 +145,33 @@ def write_log(date: dt.date, log: Dict):
 
 # ── MAIN ─────────────────────────────────────────────────────────────────────
 
+def resolve_target_date(cli_pos: str | None, cli_flag: dt.date | None, env_var: str | None) -> dt.date:
+    """Determine which date to use, with precedence: positional > flag > env > yesterday."""
+    if cli_pos:
+        return dt.datetime.strptime(cli_pos, "%Y-%m-%d").date()
+    if cli_flag:
+        return cli_flag
+    if env_var:
+        try:
+            return dt.datetime.strptime(env_var, "%Y-%m-%d").date()
+        except ValueError:
+            raise SystemExit(f"Bad DATE env‑var format: {env_var} (want YYYY‑MM‑DD)")
+    return dt.date.today() - dt.timedelta(days=1)  # default yesterday (UTC)
+
+
 def main():
     if "OPENAI_API_KEY" not in os.environ:
         raise SystemExit("OPENAI_API_KEY env var missing")
 
     argp = argparse.ArgumentParser(description="Generate daily MT‑centric arXiv digest.")
-    argp.add_argument("--date", type=lambda s: dt.datetime.strptime(s, "%Y-%m-%d").date(),
-                      help="Target UTC date (YYYY-MM-DD). Defaults to yesterday.")
+    argp.add_argument("date", nargs="?", help="Target UTC date YYYY‑MM‑DD (positional)")
+    argp.add_argument("--date", dest="date_flag", type=lambda s: dt.datetime.strptime(s, "%Y-%m-%d").date(),
+                      help="Target UTC date (flag). Overrides env var, ignored if positional given.")
     argp.add_argument("--max", dest="max_picks", type=int, default=DEFAULT_MAX_PICKS,
                       help="Maximum papers to include (default: %(default)s).")
     ns = argp.parse_args()
-    target_date = ns.date or (dt.date.today() - dt.timedelta(days=1))
+
+    target_date = resolve_target_date(ns.date, ns.date_flag, os.getenv("DATE"))
 
     # 1. Fetch papers
     papers = fetch_cscl(target_date)
