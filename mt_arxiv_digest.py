@@ -123,7 +123,8 @@ def draft_preface(date: dt.date, papers: List[Dict], picks: List[int]) -> Tuple[
 # ── WRITE OUTPUTS ────────────────────────────────────────────────────────────
 
 def write_md(date: dt.date, preface: str, papers: List[Dict], picks: List[int]):
-    md = [f"## MT‑related cs.CL papers for {date.isoformat()}", "", preface, ""]
+    pretty = date.strftime("%b %d %Y")                 # May 19 2025
+    md = [f"## MT-related cs.CL papers for {pretty}", "", preface, ""]
     for idx in picks:
         p = papers[idx-1]
         md += [f"## [{p['title']}]({p['url']})", "", p['abstract'], ""]
