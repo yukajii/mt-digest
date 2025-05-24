@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 """
-mt_arxiv_digest.py  – daily digest generator for MT‑centric cs.CL papers
+mt_arxiv_digest.py  – daily digest generator for MT‑centric cs.CL papers
 
-Version 2025‑05‑25
+Version 2025‑05‑26
 ──────────────────
-* **CLI compatibility:** works with any of these call styles now –
-     `python mt_arxiv_digest.py`                        # yesterday (default)
-     `python mt_arxiv_digest.py 2025-05-13`            # positional date
-     `python mt_arxiv_digest.py --date 2025-05-13`     # flag style
-     `python mt_arxiv_digest.py --max 7`               # pick 7 papers
-  Action workflows that set an env var can simply do `DATE=YYYY-MM-DD` and
-  call the script without args.
-* **DATE env‑var support** – if no CLI date is provided, the script checks
-  `DATE` in the environment before falling back to “yesterday UTC”.
-* No functional changes elsewhere – preface generation, logging, token–cost
-  tracking all stay the same.
+* **Preface tone tweaked:** the intro no longer apologises for small MT counts.
+  It now does **only** two things:
+     1. One lead‑in sentence: “Here’s today’s selection of cs.CL papers most
+       closely related to machine translation.”
+     2. One‑to‑two sentences summarising the shared themes.
+  No diplomatic relevance commentary.
+* CLI / env‑var behaviour unchanged.
 """
 
 from __future__ import annotations
@@ -42,7 +38,6 @@ warnings.filterwarnings(
 # ── HELPERS ──────────────────────────────────────────────────────────────────
 
 def fetch_cscl(date: dt.date) -> List[Dict]:
-    """Return list of cs.CL arXiv entries for that UTC calendar date."""
     day = date.strftime("%Y%m%d")
     query = f'cat:cs.CL AND submittedDate:[{day}0000 TO {day}2359]'
     search = arxiv.Search(query=query, max_results=MAX_RESULTS,
@@ -108,12 +103,13 @@ def draft_preface(date: dt.date, papers: List[Dict], picks: List[int]) -> Tuple[
         You are writing the short introduction for a daily Machine Translation (MT) research digest.
         Today is {date.isoformat()}.
 
-        1. Summarise in **2–3 concise sentences** the main common thread(s) of the selected papers below.
-        2. Add a brief editorial comment on how practically relevant they are to MT. If they are only
-           loosely connected, say so diplomatically and hint why they might still interest MT practitioners.
-        Do **not** list the papers again.
+        Please produce **exactly 2–3 sentences**:
+        • Sentence 1: An introduction like "Here is today's selection of cs.CL papers most closely related to machine translation."  
+        • Sentence 2–3: A concise summary of the main shared topic(s) or insight(s) you observe across the selected papers.
 
-        Selected papers:\n{titles_block}
+        Do **not** apologise, explain relevance level, or list the papers again.
+
+        Selected papers (titles only):\n{titles_block}
     """).strip()
 
     reply, usage = openai_chat(PREFACE_MODEL, [
@@ -143,10 +139,9 @@ def write_log(date: dt.date, log: Dict):
     return path
 
 
-# ── MAIN ─────────────────────────────────────────────────────────────────────
+# ── MAIN (unchanged from 25‑May version) ─────────────────────────────────────
 
 def resolve_target_date(cli_pos: str | None, cli_flag: dt.date | None, env_var: str | None) -> dt.date:
-    """Determine which date to use, with precedence: positional > flag > env > yesterday."""
     if cli_pos:
         return dt.datetime.strptime(cli_pos, "%Y-%m-%d").date()
     if cli_flag:
@@ -156,7 +151,7 @@ def resolve_target_date(cli_pos: str | None, cli_flag: dt.date | None, env_var: 
             return dt.datetime.strptime(env_var, "%Y-%m-%d").date()
         except ValueError:
             raise SystemExit(f"Bad DATE env‑var format: {env_var} (want YYYY‑MM‑DD)")
-    return dt.date.today() - dt.timedelta(days=1)  # default yesterday (UTC)
+    return dt.date.today() - dt.timedelta(days=1)
 
 
 def main():
@@ -173,22 +168,17 @@ def main():
 
     target_date = resolve_target_date(ns.date, ns.date_flag, os.getenv("DATE"))
 
-    # 1. Fetch papers
     papers = fetch_cscl(target_date)
     if not papers:
         print("No cs.CL papers on that date.")
         return
 
-    # 2. Select MT‑relevant papers
     picks, select_reply, select_usage = pick_mt_papers(papers, ns.max_picks)
 
-    # 3. Preface generation
     preface, preface_prompt, preface_usage = draft_preface(target_date, papers, picks)
 
-    # 4. Write digest file
     md_path = write_md(target_date, preface, papers, picks)
 
-    # 5. Log everything
     total_tokens = select_usage.get("total_tokens", 0) + preface_usage.get("total_tokens", 0)
     log_dict = {
         "timestamp_utc": dt.datetime.utcnow().isoformat(timespec="seconds") + "Z",
