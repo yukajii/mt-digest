@@ -124,7 +124,7 @@ def draft_preface(date: dt.date, papers: List[Dict], picks: List[int]) -> Tuple[
 
 def write_md(date: dt.date, preface: str, papers: List[Dict], picks: List[int]):
     pretty = date.strftime("%b %d %Y")                 # May 19 2025
-    md = [f"## MT-related cs.CL papers for {pretty}", "", preface, ""]
+    # md = [f"## MT-related cs.CL papers for {pretty}", "", preface, ""]
     for idx in picks:
         p = papers[idx-1]
         md += [f"## [{p['title']}]({p['url']})", "", p['abstract'], ""]
