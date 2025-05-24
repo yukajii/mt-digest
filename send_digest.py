@@ -30,6 +30,7 @@ import pathlib
 import sys
 import time
 import urllib.parse
+from datetime import datetime
 from typing import Any, Dict
 
 import requests
@@ -59,7 +60,11 @@ if not TOKEN:
     die("Env var BUTTONDOWN_TOKEN is missing")
 
 subject_date = md_path.stem[-10:]  # YYYY-MM-DD at end of filename
-SUBJECT = f"MT digest – {subject_date}"
+
+# subject_date currently looks like '2025-05-19'
+date_obj = datetime.strptime(subject_date, "%Y-%m-%d")
+pretty = date_obj.strftime("%b %d %Y")     # May 19 2025
+subject = f"Machine-Translation Digest — {pretty}"
 
 headers: Dict[str, str] = {
     "Authorization": f"Token {TOKEN}",

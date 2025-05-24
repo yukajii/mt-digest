@@ -22,7 +22,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           BUTTONDOWN_TOKEN: ${{ secrets.BUTTONDOWN_TOKEN }}
         run: |
-          DATE="2025-05-19"                     # ← or compute yesterday automatically
+          DATE="2025-05-18"                     # ← or compute yesterday automatically
           python mt_arxiv_digest.py "$DATE"
 
           FILE="mt_digest_${DATE}.md"           # use the same DATE
