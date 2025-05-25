@@ -2,7 +2,7 @@ name: Test Cron Trigger
 
 on:
   schedule:
-    - cron: '45 8 * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
