@@ -13,7 +13,6 @@ jobs:
       - name: Confirm trigger works
         run: echo "Triggered at $(date)"
 
-    steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
