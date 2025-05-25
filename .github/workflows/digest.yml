@@ -11,7 +11,7 @@ on:
         type: string
   # Weekday schedule (Mon-Fri) at 06:59 UTC  ≈ 09:59 Bulgaria
   schedule:
-    - cron: '59 8 * * 1-7'  # Fixed: proper 5-field format, Mon-Fri only
+    - cron: '2 9 * * 7'  # Fixed: proper 5-field format, Mon-Fri only
 jobs:
   build_send:
     runs-on: ubuntu-latest
