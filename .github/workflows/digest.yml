@@ -1,34 +1,13 @@
-name: MT Arxiv Digest
+name: Test Cron Trigger
 
 on:
   schedule:
-    - cron: '*/6 * * * *'  # Bumped to 6-minutely for re-registration
+    - cron: '45 8 * * *'
   workflow_dispatch:
 
 jobs:
-  digest:
+  test:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Confirm trigger works
-        run: echo "Triggered at $(date)"
-
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run digest script
-        env:
-          BUTTONDOWN_API_KEY: ${{ secrets.BUTTONDOWN_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          DATE="$(date -u +%F)"
-          echo "Using date: $DATE"
-          python mt_arxiv_digest.py --date "$DATE"
+      - name: Echo time
+        run: date
