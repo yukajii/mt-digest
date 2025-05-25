@@ -3,13 +3,13 @@ name: MT Digest
 # ──────────────────────────────── 1 ────────────────────────────────
 # Triggers
 on:
-  # Manual run -> form appears with an optional date input
-  workflow_dispatch:
-    inputs:
-      date:
-        description: 'Date to fetch (YYYY-MM-DD). Leave blank for auto.'
-        required: false
-        type: string
+  # # Manual run -> form appears with an optional date input
+  # workflow_dispatch:
+  #   inputs:
+  #     date:
+  #       description: 'Date to fetch (YYYY-MM-DD). Leave blank for auto.'
+  #       required: false
+  #       type: string
 
   # Weekday schedule (Mon-Fri) at 06:20 UTC  ≈ 09:20 Bulgaria
   schedule:
