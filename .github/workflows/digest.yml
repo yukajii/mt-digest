@@ -11,7 +11,7 @@ on:
         type: string
   # Daily schedule at 09:05 UTC
   schedule:
-    - cron: '20 9 * * *'  # Every day at 09:05 UTC
+    - cron: '50 9 * * *'  # Every day at 09:05 UTC
 jobs:
   build_send:
     runs-on: ubuntu-latest
