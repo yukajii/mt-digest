@@ -1,0 +1,73 @@
+name: MT Digest
+
+# ──────────────────────────────── 1 ────────────────────────────────
+# Triggers
+on:
+  # Manual run -> form appears with an optional date input
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Date to fetch (YYYY-MM-DD). Leave blank for auto.'
+        required: false
+        type: string
+
+  # Weekday schedule (Mon-Fri) at 06:20 UTC  ≈ 09:20 Bulgaria
+  schedule:
+    - cron: '30 7 * * *'
+
+jobs:
+  build_send:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ────────────────────────── 2 ──────────────────────────
+      # Pull code
+      - uses: actions/checkout@v4
+
+      # Python 3.11
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Install libraries
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      # ────────────────────────── 3 ──────────────────────────
+      # Decide which DATE to use
+      - name: Choose DATE
+        id: date
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.date }}" ]; then
+            DATE="${{ github.event.inputs.date }}"
+          else
+            # arXiv publishes Sun-Thu (US time). A 06:20 UTC weekday run should look at "yesterday".
+            DATE=$(date -u -d 'yesterday' +%F)
+          fi
+          echo "Using DATE=$DATE"
+          echo "DATE=$DATE" >> $GITHUB_ENV
+
+      # ────────────────────────── 4 ──────────────────────────
+      # Generate digest & send it
+      - name: Build and email digest
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          BUTTONDOWN_TOKEN: ${{ secrets.BUTTONDOWN_TOKEN }}
+        run: |
+          python mt_arxiv_digest.py "$DATE"
+          FILE="mt_digest_${DATE}.md"
+          if [ -f "$FILE" ]; then
+            python send_digest.py "$FILE"
+          else
+            echo "::warning ::Digest file not found; skipping e-mail."
+          fi
+
+      # ────────────────────────── 5 ──────────────────────────
+      # (Optional) push new markdown & logs back to repo
+      - name: Commit artefacts
+        run: |
+          git config user.name  github-actions
+          git config user.email github-actions@users.noreply.github.com
+          git add mt_digest_*.md logs/* || true
+          git commit -m "Auto-digest $DATE" -a || echo "Nothing to commit"
+          git push || true
