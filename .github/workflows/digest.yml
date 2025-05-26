@@ -1,24 +1,23 @@
 name: MT Digest
-# ─────────────────────────────── 1 ───────────────────────────────
+# ——————————————————————————— 1 ———————————————————————————
 # Triggers
 on:
-  # Manual run -> form appears with an optional date input
+  # Manual run → form appears with an optional date input
   workflow_dispatch:
     inputs:
       date:
         description: 'Date to fetch (YYYY-MM-DD). Leave blank for auto.'
         required: false
         type: string
-  # arXiv releases new listings Mon ‑Fri (~04:00 UTC).
-  # Run at 06:20 UTC Monday‑Friday.
+  # Run every day at 06:20 UTC.
   schedule:
-    - cron: '20 18 * * 1-5'  # Weekdays at 06:20 UTC
+    - cron: '20 6 * * *'  # Daily at 06:20 UTC
 
 jobs:
   build_send:
     runs-on: ubuntu-latest
     steps:
-      # ──────────────────────── 2 ────────────────────────
+      # ——————————————————————————— 2 ———————————————————————————
       # Pull code
       - uses: actions/checkout@v4
 
@@ -31,31 +30,22 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
-      # ──────────────────────── 3 ────────────────────────
+      # ——————————————————————————— 3 ———————————————————————————
       # Decide which DATE to use
       - name: Choose DATE
         id: date
         shell: bash
         run: |
+          # If manually triggered with a DATE argument, respect it; otherwise use TODAY‑4 days.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.date }}" ]; then
             DATE="${{ github.event.inputs.date }}"
           else
-            # arXiv listings appear Mon‑Fri only.
-            # Job runs at 06:20 UTC (>=02:20 ET) → current weekday’s list is live.
-            #   • Mon‑Fri  → today
-            #   • Sat      → yesterday  (Friday's list)
-            #   • Sun      → 2 days ago (Friday's list)
-            dow=$(date -u '+%u')   # 1‑7 = Mon‑Sun
-            case "$dow" in
-              6) DATE=$(date -u -d 'yesterday' +%F) ;;     # Saturday → Friday
-              7) DATE=$(date -u -d '2 days ago' +%F) ;;    # Sunday   → Friday
-              *) DATE=$(date -u '+%F') ;;                  # Weekday  → today
-            esac
+            DATE=$(date -u -d '4 days ago' +%F)
           fi
           echo "Using DATE=$DATE"
           echo "DATE=$DATE" >> $GITHUB_ENV
 
-      # ──────────────────────── 4 ────────────────────────
+      # ——————————————————————————— 4 ———————————————————————————
       # Generate digest & send it
       - name: Build and email digest
         env:
@@ -70,7 +60,7 @@ jobs:
             echo "::warning ::Digest file not found; skipping e-mail."
           fi
 
-      # ──────────────────────── 5 ────────────────────────
+      # ——————————————————————————— 5 ———————————————————————————
       # (Optional) push new markdown & logs back to repo
       - name: Commit artefacts
         run: |
