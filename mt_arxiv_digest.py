@@ -19,7 +19,7 @@ import arxiv, openai
 from sentence_transformers import SentenceTransformer   # NEW
 
 # ── CONSTANTS ────────────────────────────────────────────────────────────
-MAX_RESULTS      = 220
+MAX_RESULTS      = 222
 DEFAULT_MAX_PICKS = 5
 PREFACE_MODEL    = "gpt-4o"              # unchanged
 USD_PER_TOKEN    = 0.000005
