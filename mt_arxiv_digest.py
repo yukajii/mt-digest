@@ -37,7 +37,8 @@ CONCEPTS = [
     "mtpe",
     "mtqe",
     "linguistic quality assurance",
-    "lqa"
+    "lqa",
+    "mqm"
 ]
 
 BASE_DIR = pathlib.Path(__file__).parent
