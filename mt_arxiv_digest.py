@@ -120,20 +120,29 @@ def draft_preface(date: dt.date, papers: List[Dict], picks: List[int]):
     return reply.strip(), user_msg, usage
 
 
-# ── OUTPUT WRITERS (unchanged) ───────────────────────────────────────────
+# ── OUTPUT WRITERS ───────────────────────────────────────────────────────
 def write_md(date: dt.date, preface: str, papers: List[Dict], picks: List[int]):
-    md = [preface, ""]
+    # 1️⃣ Render the opening paragraph as a Markdown block-quote
+    preface = "> " + preface.replace("\n", "\n> ")
+
+    md: List[str] = [preface, ""]          # blank line after the quote
+
+    # 2️⃣ Add each chosen paper separated by a horizontal rule (---)
+    first = True
     for idx in picks:
-        p = papers[idx-1]
-        md += [f"## [{p['title']}]({p['url']})", "", p['abstract'], ""]
+        p = papers[idx - 1]
+        if not first:                      # skip rule before the very first paper
+            md += ["---", ""]
+        first = False
+
+        md += [
+            f"## [{p['title']}]({p['url']})",
+            "",
+            p["abstract"],
+        ]
+
     path = BASE_DIR / f"mt_digest_{date.isoformat()}.md"
     path.write_text("\n".join(md), encoding="utf-8")
-    return path
-
-
-def write_log(date: dt.date, log: Dict):
-    path = LOG_DIR / f"mt_digest_{date.isoformat()}.log"
-    path.write_text(json.dumps(log, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
 
 

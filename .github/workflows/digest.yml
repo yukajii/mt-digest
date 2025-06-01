@@ -1,4 +1,8 @@
 name: MT Digest
+
+permissions:
+  contents: write          # ⬅️ new – lets the default GITHUB_TOKEN push
+  
 # ——————————————————————————— 1 ———————————————————————————
 # Triggers
 on:
