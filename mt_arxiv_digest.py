@@ -19,26 +19,21 @@ import arxiv, openai
 from sentence_transformers import SentenceTransformer   # NEW
 
 # ── CONSTANTS ────────────────────────────────────────────────────────────
-MAX_RESULTS      = 222
+MAX_RESULTS       = 222
 DEFAULT_MAX_PICKS = 5
-PREFACE_MODEL    = "gpt-4o"              # unchanged
-USD_PER_TOKEN    = 0.000005
+PREFACE_MODEL     = "gpt-4o"
+USD_PER_TOKEN     = 0.000005
 
 EMBED_MODEL_NAME = "intfloat/e5-large-v2"               # NEW
 CONCEPTS = [
     "machine translation",
     "neural machine translation",
-    "NMT",
-    "document-level translation",
+    "NMT", "document-level translation",
     "low-resource translation",
     "cross-lingual transfer",
     "translation evaluation BLEU COMET chrF",
-    "post-editing",
-    "mtpe",
-    "mtqe",
-    "linguistic quality assurance",
-    "lqa",
-    "mqm"
+    "post-editing", "mtpe", "mtqe",
+    "linguistic quality assurance", "lqa", "mqm"
 ]
 
 BASE_DIR = pathlib.Path(__file__).parent
@@ -48,18 +43,16 @@ LOG_DIR.mkdir(exist_ok=True)
 # ── MODEL SET-UP (done once per run) ─────────────────────────────────────
 warnings.filterwarnings("ignore", message=r".*deprecated.*", category=DeprecationWarning)
 EMBEDDER = SentenceTransformer(EMBED_MODEL_NAME)
-CONCEPT_VECTOR = EMBEDDER.encode(
-    " ; ".join(CONCEPTS), normalize_embeddings=True
-)                                            # shape (768,)
+CONCEPT_VECTOR = EMBEDDER.encode(" ; ".join(CONCEPTS), normalize_embeddings=True)
 
 # ── HELPERS ──────────────────────────────────────────────────────────────
 def fetch_cscl(date: dt.date) -> List[Dict]:
     day = date.strftime("%Y%m%d")
     q = f'cat:cs.CL AND submittedDate:[{day}0000 TO {day}2359]'
-    search = arxiv.Search(query=q, max_results=MAX_RESULTS,
-                          sort_by=arxiv.SortCriterion.SubmittedDate)
-    client = arxiv.Client()
-    papers = []
+    search  = arxiv.Search(query=q, max_results=MAX_RESULTS,
+                           sort_by=arxiv.SortCriterion.SubmittedDate)
+    client  = arxiv.Client()
+    papers: List[Dict] = []
     for p in client.results(search):
         papers.append({
             "id": p.get_short_id(),
@@ -77,24 +70,19 @@ def rank_mt_papers(papers: List[Dict], max_picks: int) -> List[int]:
         vec = EMBEDDER.encode(
             f"{p['title']} {p['abstract']}", normalize_embeddings=True
         )
-        score = float(np.dot(CONCEPT_VECTOR, vec))          # cosine sim
-        scores.append((score, idx))
-
+        scores.append((float(np.dot(CONCEPT_VECTOR, vec)), idx))   # cosine sim
     ranked = sorted(scores, reverse=True)[:max_picks]
     return [idx for _, idx in ranked]
 
 
 def openai_chat(model: str, messages: List[Dict], temperature: float = 0):
     client = openai.OpenAI()
-    resp = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=temperature,
+    resp   = client.chat.completions.create(
+        model=model, messages=messages, temperature=temperature
     )
     return resp.choices[0].message.content, resp.usage.model_dump()
 
-
-# ── PREFACE (unchanged) ─────────────────────────────────────────────────
+# ── PREFACE ──────────────────────────────────────────────────────────────
 def draft_preface(date: dt.date, papers: List[Dict], picks: List[int]):
     chosen = [papers[i-1] for i in picks] if picks else []
     titles_block = "\n".join(f"• {p['title']}" for p in chosen) or "(no MT-specific papers today)"
@@ -104,12 +92,13 @@ def draft_preface(date: dt.date, papers: List[Dict], picks: List[int]):
         Today is {date.isoformat()}.
 
         Please produce **exactly 2–3 sentences**:
-        • Sentence 1: An introduction like "Here is today's selection of cs.CL papers most closely related to machine translation."  
-        • Sentence 2–3: A concise summary of the main shared topic(s) or insight(s) you observe across the selected papers.
+        • Sentence 1 – an intro (e.g. “Here is today's selection of cs.CL papers …”).  
+        • Sentence 2–3 – a concise summary of the common theme(s).
 
         Do **not** apologise, explain relevance level, or list the papers again.
 
-        Selected papers (titles only):\n{titles_block}
+        Selected papers (titles only):
+        {titles_block}
     """).strip()
 
     reply, usage = openai_chat(PREFACE_MODEL, [
@@ -119,22 +108,20 @@ def draft_preface(date: dt.date, papers: List[Dict], picks: List[int]):
 
     return reply.strip(), user_msg, usage
 
-
 # ── OUTPUT WRITERS ───────────────────────────────────────────────────────
-def write_md(date: dt.date, preface: str, papers: List[Dict], picks: List[int]):
-    # 1️⃣ Render the opening paragraph as a Markdown block-quote
+def write_md(date: dt.date, preface: str,
+             papers: List[Dict], picks: List[int]):
+    """Create Markdown digest with a quoted preface and 🡓 separators."""
+    # 1️⃣ quote the preface → visually distinct in Markdown & Buttondown
     preface = "> " + preface.replace("\n", "\n> ")
 
     md: List[str] = [preface, ""]          # blank line after the quote
-
-    # 2️⃣ Add each chosen paper separated by a horizontal rule (---)
     first = True
     for idx in picks:
-        p = papers[idx - 1]
-        if not first:                      # skip rule before the very first paper
+        p = papers[idx-1]
+        if not first:                      # HR before every paper except first
             md += ["---", ""]
         first = False
-
         md += [
             f"## [{p['title']}]({p['url']})",
             "",
@@ -145,6 +132,12 @@ def write_md(date: dt.date, preface: str, papers: List[Dict], picks: List[int]):
     path.write_text("\n".join(md), encoding="utf-8")
     return path
 
+
+def write_log(date: dt.date, log: Dict):
+    """Dump a JSON activity log next to the Markdown file."""
+    path = LOG_DIR / f"mt_digest_{date.isoformat()}.log"
+    path.write_text(json.dumps(log, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
 
 # ── MAIN ─────────────────────────────────────────────────────────────────
 def resolve_target_date(cli_pos, cli_flag, env_var):
@@ -168,9 +161,10 @@ def main():
     ap.add_argument("date", nargs="?", help="Target UTC date YYYY-MM-DD (positional)")
     ap.add_argument("--date", dest="date_flag",
                     type=lambda s: dt.datetime.strptime(s, "%Y-%m-%d").date(),
-                    help="Target UTC date (flag). Overrides env var, ignored if positional given.")
-    ap.add_argument("--max", dest="max_picks", type=int, default=DEFAULT_MAX_PICKS,
-                    help="Maximum papers to include (default: %(default)s).")
+                    help="Target UTC date (flag).")
+    ap.add_argument("--max", dest="max_picks", type=int,
+                    default=DEFAULT_MAX_PICKS,
+                    help=f"Maximum papers to include (default: {DEFAULT_MAX_PICKS}).")
     ns = ap.parse_args()
 
     target_date = resolve_target_date(ns.date, ns.date_flag, os.getenv("DATE"))
@@ -193,13 +187,14 @@ def main():
         "token_usage": {
             "preface_call": preface_usage,
             "grand_total": preface_usage.get("total_tokens", 0),
-            "approx_cost_usd": round(preface_usage.get("total_tokens", 0) * USD_PER_TOKEN, 4),
+            "approx_cost_usd": round(preface_usage.get("total_tokens", 0)
+                                     * USD_PER_TOKEN, 4),
         },
         "preface_prompt_sent": preface_prompt,
     }
     log_path = write_log(target_date, log_dict)
 
-    print(f"✓ Digest saved at {md_path.name}  |  Log → {log_path.relative_to(BASE_DIR)}")
+    print(f"✓ Digest → {md_path.name}   |   Log → {log_path.relative_to(BASE_DIR)}")
 
 
 if __name__ == "__main__":
