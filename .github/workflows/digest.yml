@@ -1,27 +1,31 @@
 name: MT Digest
 
-# we can keep this even though we no longer push
-permissions:
-  contents: write          
-
+# ── triggers ────────────────────────────────────────────────────────────
 on:
   workflow_dispatch:
     inputs:
       date:
-        description: 'Date to fetch (YYYY-MM-DD). Leave blank for auto-yesterday.'
+        description: "UTC date to fetch (YYYY-MM-DD). Leave blank for yesterday."
         required: false
         type: string
   schedule:
-    - cron: '20 6 * * *'   # every day 06:20 UTC
+    - cron: "20 6 * * *"        # daily 06:20 UTC
 
+# Just in case we ever want to push something again
+permissions:
+  contents: write
+
+# ── job ─────────────────────────────────────────────────────────────────
 jobs:
-  build_send:
+  digest:
     runs-on: ubuntu-latest
-    steps:
-      # ── 1. checkout repo ──────────────────────────────────────────────
-      - uses: actions/checkout@v4
 
-      # ── 2. speed-up: cache wheels, HF models, Torch ───────────────────
+    steps:
+      # 1. checkout ------------------------------------------------------
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # 2. cache wheels, HF models, torch --------------------------------
       - name: Cache pip & models
         uses: actions/cache@v4
         with:
@@ -32,27 +36,27 @@ jobs:
           key: ${{ runner.os }}-mt-digest-${{ hashFiles('**/requirements.txt') }}
           restore-keys: ${{ runner.os }}-mt-digest-
 
-      # ── 3. Python 3.11 ────────────────────────────────────────────────
-      - uses: actions/setup-python@v5
+      # 3. Python --------------------------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      # ── 4. deps ───────────────────────────────────────────────────────
-      - name: Install deps
+      - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ── 5. decide DATE (CLI > yesterday) ──────────────────────────────
-      - name: Choose DATE
+      # 4. pick the DATE -------------------------------------------------
+      - name: Determine DATE
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.date }}" ]; then
-            echo "DATE=${{ github.event.inputs.date }}" >> $GITHUB_ENV
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.date }}" ]]; then
+            echo "DATE=${{ github.event.inputs.date }}" >>"$GITHUB_ENV"
           else
-            echo "DATE=$(date -u -d 'yesterday' +%F)" >> $GITHUB_ENV
+            echo "DATE=$(date -u -d 'yesterday' +%F)" >>"$GITHUB_ENV"
           fi
-          echo "Using DATE=$DATE"  # printed by bash
+          echo "Digest date: $DATE"
 
-      # ── 6. build digest & send it ─────────────────────────────────────
-      - name: Build and email digest
+      # 5. build + send --------------------------------------------------
+      - name: Build and send digest
         env:
           OPENAI_API_KEY:   ${{ secrets.OPENAI_API_KEY }}
           BUTTONDOWN_TOKEN: ${{ secrets.BUTTONDOWN_TOKEN }}
@@ -60,7 +64,7 @@ jobs:
           python mt_arxiv_digest.py "$DATE"
           python send_digest.py "mt_digest_${DATE}.md"
 
-      # ── 7. upload artefacts (private, retained 30 days) ───────────────
+      # 6. artefacts (private, 30 d retention) ---------------------------
       - name: Upload Markdown digest
         uses: actions/upload-artifact@v4
         with:
@@ -68,5 +72,9 @@ jobs:
           path: mt_digest_${{ env.DATE }}.md
           retention-days: 30
 
-      - name: Upload digest log
-        uses:
+      - name: Upload JSON log
+        uses: actions/upload-artifact@v4
+        with:
+          name: mt_digest_log-${{ env.DATE }}
+          path: logs/*.log
+          retention-days: 30

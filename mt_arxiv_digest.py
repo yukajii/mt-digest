@@ -112,21 +112,21 @@ def draft_preface(date: dt.date, papers: List[Dict], picks: List[int]):
 def write_md(date: dt.date, preface: str,
              papers: List[Dict], picks: List[int]):
     """
-    Create Markdown digest:
-      • preface as normal paragraph
-      • '---' rule *after* preface and between papers
+    Markdown layout:
+      • Preface = plain paragraph
+      • '---' rule AFTER preface and between papers
     """
     md: List[str] = [
-        preface.strip(),  # single paragraph intro
+        preface.strip(),
         "",
-        "---",            # separator before first paper
+        "---",  # separator before first paper
         "",
     ]
 
     first = True
     for idx in picks:
         if not first:
-            md += ["---", ""]             # rule between papers
+            md += ["---", ""]          # separator between papers
         first = False
 
         p = papers[idx - 1]
@@ -134,13 +134,12 @@ def write_md(date: dt.date, preface: str,
             f"## [{p['title']}]({p['url']})",
             "",
             p["abstract"],
-            "",                           # blank line after abstract
+            "",                        # blank line keeps HR from becoming H2
         ]
 
     path = BASE_DIR / f"mt_digest_{date.isoformat()}.md"
     path.write_text("\n".join(md), encoding="utf-8")
     return path
-
 
 
 def write_log(date: dt.date, log: Dict):
