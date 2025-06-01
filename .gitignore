@@ -1,3 +1,6 @@
+# daily auto-generated content
+mt_digest_*.md
+
 # Logs
 *.log
 npm-debug.log*

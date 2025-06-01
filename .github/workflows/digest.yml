@@ -76,11 +76,11 @@ jobs:
 
       # ——————————————————————————— 5 ———————————————————————————
       # (Optional) push new markdown & logs back to repo
-      - name: Upload digest log (private)
+      - name: Upload Markdown digest (private)
         uses: actions/upload-artifact@v4
         with:
-          name: mt_digest_log-${{ env.DATE }}
-          path: logs/*.log
+          name: mt_digest_md-${{ env.DATE }}
+          path: mt_digest_${{ env.DATE }}.md
           retention-days: 30
       # ──────────────────────────────────────────────────────────────────
 
