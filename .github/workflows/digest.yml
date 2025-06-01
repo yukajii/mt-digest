@@ -2,7 +2,7 @@ name: MT Digest
 
 permissions:
   contents: write          # ⬅️ new – lets the default GITHUB_TOKEN push
-  
+
 # ——————————————————————————— 1 ———————————————————————————
 # Triggers
 on:
@@ -21,16 +21,26 @@ jobs:
   build_send:
     runs-on: ubuntu-latest
     steps:
-      # ——————————————————————————— 2 ———————————————————————————
-      # Pull code
+      # 1️⃣- checkout
       - uses: actions/checkout@v4
 
-      # Python 3.11
+      # 2️⃣---- NEW cache: pip wheels + HF models + torch
+      - name: Cache pip & models
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/huggingface
+            ~/.cache/torch
+          key: ${{ runner.os }}-mt-digest-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: ${{ runner.os }}-mt-digest-
+
+      # 3️⃣- set-up Python
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # Install libraries
+      # 4️⃣- install deps (will be near-instant when cache hits)
       - name: Install deps
         run: pip install -r requirements.txt
 
