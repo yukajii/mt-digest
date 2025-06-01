@@ -1,30 +1,27 @@
 name: MT Digest
 
+# we can keep this even though we no longer push
 permissions:
-  contents: write          # ⬅️ new – lets the default GITHUB_TOKEN push
+  contents: write          
 
-# ——————————————————————————— 1 ———————————————————————————
-# Triggers
 on:
-  # Manual run → form appears with an optional date input
   workflow_dispatch:
     inputs:
       date:
-        description: 'Date to fetch (YYYY-MM-DD). Leave blank for auto.'
+        description: 'Date to fetch (YYYY-MM-DD). Leave blank for auto-yesterday.'
         required: false
         type: string
-  # Run every day at 06:20 UTC.
   schedule:
-    - cron: '20 6 * * *'  # Daily at 06:20 UTC
+    - cron: '20 6 * * *'   # every day 06:20 UTC
 
 jobs:
   build_send:
     runs-on: ubuntu-latest
     steps:
-      # 1️⃣- checkout
+      # ── 1. checkout repo ──────────────────────────────────────────────
       - uses: actions/checkout@v4
 
-      # 2️⃣---- NEW cache: pip wheels + HF models + torch
+      # ── 2. speed-up: cache wheels, HF models, Torch ───────────────────
       - name: Cache pip & models
         uses: actions/cache@v4
         with:
@@ -35,59 +32,41 @@ jobs:
           key: ${{ runner.os }}-mt-digest-${{ hashFiles('**/requirements.txt') }}
           restore-keys: ${{ runner.os }}-mt-digest-
 
-      # 3️⃣- set-up Python
+      # ── 3. Python 3.11 ────────────────────────────────────────────────
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # 4️⃣- install deps (will be near-instant when cache hits)
+      # ── 4. deps ───────────────────────────────────────────────────────
       - name: Install deps
         run: pip install -r requirements.txt
 
-      # ——————————————————————————— 3 ———————————————————————————
-      # Decide which DATE to use
+      # ── 5. decide DATE (CLI > yesterday) ──────────────────────────────
       - name: Choose DATE
-        id: date
-        shell: bash
         run: |
-          # If manually triggered with a DATE argument, respect it; otherwise use TODAY‑4 days.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.date }}" ]; then
-            DATE="${{ github.event.inputs.date }}"
+            echo "DATE=${{ github.event.inputs.date }}" >> $GITHUB_ENV
           else
-            DATE=$(date -u -d '4 days ago' +%F)
+            echo "DATE=$(date -u -d 'yesterday' +%F)" >> $GITHUB_ENV
           fi
-          echo "Using DATE=$DATE"
-          echo "DATE=$DATE" >> $GITHUB_ENV
+          echo "Using DATE=$DATE"  # printed by bash
 
-      # ——————————————————————————— 4 ———————————————————————————
-      # Generate digest & send it
+      # ── 6. build digest & send it ─────────────────────────────────────
       - name: Build and email digest
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY:   ${{ secrets.OPENAI_API_KEY }}
           BUTTONDOWN_TOKEN: ${{ secrets.BUTTONDOWN_TOKEN }}
         run: |
           python mt_arxiv_digest.py "$DATE"
-          FILE="mt_digest_${DATE}.md"
-          if [ -f "$FILE" ]; then
-            python send_digest.py "$FILE"
-          else
-            echo "::warning ::Digest file not found; skipping e-mail."
-          fi
+          python send_digest.py "mt_digest_${DATE}.md"
 
-      # ——————————————————————————— 5 ———————————————————————————
-      # (Optional) push new markdown & logs back to repo
-      - name: Upload Markdown digest (private)
+      # ── 7. upload artefacts (private, retained 30 days) ───────────────
+      - name: Upload Markdown digest
         uses: actions/upload-artifact@v4
         with:
           name: mt_digest_md-${{ env.DATE }}
           path: mt_digest_${{ env.DATE }}.md
           retention-days: 30
-      # ──────────────────────────────────────────────────────────────────
 
-      - name: Commit & push Markdown only
-        run: |
-          git config user.name  github-actions
-          git config user.email github-actions@github.com
-          git add "mt_digest_${DATE}.md"
-          git commit -m "Auto-digest ${DATE}" || echo "nothing to commit"
-          git push
+      - name: Upload digest log
+        uses:
