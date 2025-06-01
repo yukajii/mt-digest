@@ -62,7 +62,7 @@ try:
 except ValueError:
     pretty_date = subject_date  # fallback, but should never happen
 
-subject = f"Machine-Translation Digest — {pretty_date}"
+subject = f"Machine-Translation Digest for {pretty_date}"
 
 headers: Dict[str, str] = {
     "Authorization": f"Token {TOKEN}",
