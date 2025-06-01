@@ -111,21 +111,22 @@ def draft_preface(date: dt.date, papers: List[Dict], picks: List[int]):
 # ── OUTPUT WRITERS ───────────────────────────────────────────────────────
 def write_md(date: dt.date, preface: str,
              papers: List[Dict], picks: List[int]):
-    """Create Markdown digest with a quoted preface and 🡓 separators."""
-    # 1️⃣ quote the preface → visually distinct in Markdown & Buttondown
+    """Create Markdown digest with a quoted preface and HR separators."""
     preface = "> " + preface.replace("\n", "\n> ")
 
     md: List[str] = [preface, ""]          # blank line after the quote
     first = True
     for idx in picks:
-        p = papers[idx-1]
-        if not first:                      # HR before every paper except first
-            md += ["---", ""]
+        p = papers[idx - 1]
+        if not first:
+            md += ["", "---", ""]          # blank → HR → blank
         first = False
+
         md += [
             f"## [{p['title']}]({p['url']})",
             "",
             p["abstract"],
+            "",                            # ⬅️ new blank line after abstract
         ]
 
     path = BASE_DIR / f"mt_digest_{date.isoformat()}.md"
