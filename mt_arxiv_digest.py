@@ -66,7 +66,7 @@ def fetch_cscl(date: dt.date) -> List[Dict]:
 def rank_mt_papers(papers: List[Dict], max_picks: int) -> List[int]:
     """Return 1-based indices of the top *max_picks* MT-like papers."""
     scores: List[Tuple[float, int]] = []
-    for idx, p in enumerate(papers, start=1):
+    for idx, p in enumerate(papers, start=4):
         vec = EMBEDDER.encode(
             f"{p['title']} {p['abstract']}", normalize_embeddings=True
         )
