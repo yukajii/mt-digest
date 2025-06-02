@@ -1,4 +1,4 @@
-name: MT Digest           # (file path: .github/workflows/mt_digest.yml)
+name: MT Digest
 
 # ── triggers ────────────────────────────────────────────────────────────
 on:
@@ -9,10 +9,10 @@ on:
         required: false
         type: string
   schedule:
-    - cron: "20 6 * * *"   # daily 06:20 UTC
+    - cron: "20 6 * * *"        # daily 06:20 UTC
 
 permissions:
-  contents: write          # so we could push in the future if desired
+  contents: write
 
 # ── job ─────────────────────────────────────────────────────────────────
 jobs:
@@ -24,7 +24,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # 2. cache wheels / HF models / torch -----------------------------
+      # 2. cache wheels, HF models, torch --------------------------------
       - name: Cache pip & models
         uses: actions/cache@v4
         with:
@@ -44,10 +44,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # 4. capture DATE if provided -------------------------------------
-      - name: Capture DATE input (optional)
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.date != ''
-        run: echo "DATE=${{ github.event.inputs.date }}" >>"$GITHUB_ENV"
+      # 4. pick the DATE -------------------------------------------------
+      - name: Determine DATE
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.date }}" ]]; then
+            echo "DATE=${{ github.event.inputs.date }}" >>"$GITHUB_ENV"
+          else
+            echo "DATE=$(date -u -d '5 days ago' +%F)" >>"$GITHUB_ENV"   # ← only edit
+          fi
+          echo "Digest date: $DATE"
 
       # 5. build + send --------------------------------------------------
       - name: Build and send digest
@@ -55,32 +60,20 @@ jobs:
           OPENAI_API_KEY:   ${{ secrets.OPENAI_API_KEY }}
           BUTTONDOWN_TOKEN: ${{ secrets.BUTTONDOWN_TOKEN }}
         run: |
-          set -euo pipefail
-
-          if [[ -n "${DATE:-}" ]]; then
-            echo "Running for explicit date $DATE"
-            python mt_arxiv_digest.py "$DATE"
-            MD_FILE="mt_digest_${DATE}.md"
-          else
-            echo "Running in automatic date mode"
-            python mt_arxiv_digest.py            # ← no args → automatic date
-            MD_FILE=$(ls mt_digest_*.md | sort | tail -n1)
-          fi
-          echo "MD_FILE=$MD_FILE" >>"$GITHUB_ENV"
-
-          python send_digest.py "$MD_FILE"
+          python mt_arxiv_digest.py "$DATE"
+          python send_digest.py "mt_digest_${DATE}.md"
 
       # 6. artefacts (private, 30 d retention) ---------------------------
       - name: Upload Markdown digest
         uses: actions/upload-artifact@v4
         with:
-          name: mt_digest_md-${{ env.MD_FILE }}
-          path: ${{ env.MD_FILE }}
+          name: mt_digest_md-${{ env.DATE }}
+          path: mt_digest_${{ env.DATE }}.md
           retention-days: 30
 
       - name: Upload JSON log
         uses: actions/upload-artifact@v4
         with:
-          name: mt_digest_log
+          name: mt_digest_log-${{ env.DATE }}
           path: logs/*.log
           retention-days: 30
