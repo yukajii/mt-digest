@@ -66,7 +66,7 @@ def fetch_cscl(date: dt.date) -> List[Dict]:
 def rank_mt_papers(papers: List[Dict], max_picks: int) -> List[int]:
     """Return 1-based indices of the top *max_picks* MT-like papers."""
     scores: List[Tuple[float, int]] = []
-    for idx, p in enumerate(papers, start=4):
+    for idx, p in enumerate(papers, start=1):
         vec = EMBEDDER.encode(
             f"{p['title']} {p['abstract']}", normalize_embeddings=True
         )
@@ -159,7 +159,7 @@ def resolve_target_date(cli_pos, cli_flag, env_var):
             return dt.datetime.strptime(env_var, "%Y-%m-%d").date()
         except ValueError:
             raise SystemExit(f"Bad DATE env-var format: {env_var} (want YYYY-MM-DD)")
-    return dt.date.today() - dt.timedelta(days=1)
+    return dt.date.today() - dt.timedelta(days=4)
 
 
 def main():
