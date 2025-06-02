@@ -24,6 +24,10 @@ DEFAULT_MAX_PICKS = 5
 PREFACE_MODEL     = "gpt-4o"
 USD_PER_TOKEN     = 0.000005
 
+# arXiv’s “new submissions” e-mail typically lags ~4 days;
+# using 5 days gives us a safe buffer so that 2 Jun → 28 May, as desired.
+DEFAULT_DATE_LAG_DAYS = 5
+
 EMBED_MODEL_NAME = "intfloat/e5-large-v2"               # NEW
 CONCEPTS = [
     "machine translation",
@@ -150,6 +154,14 @@ def write_log(date: dt.date, log: Dict):
 
 # ── MAIN ─────────────────────────────────────────────────────────────────
 def resolve_target_date(cli_pos, cli_flag, env_var):
+    """
+    Resolve the intended arXiv ‘submission date’ to use.
+    Precedence:
+      1. positional CLI argument
+      2. --date flag
+      3. DATE environment variable (set in CI)
+      4. Fallback → today − DEFAULT_DATE_LAG_DAYS
+    """
     if cli_pos:
         return dt.datetime.strptime(cli_pos, "%Y-%m-%d").date()
     if cli_flag:
@@ -159,9 +171,8 @@ def resolve_target_date(cli_pos, cli_flag, env_var):
             return dt.datetime.strptime(env_var, "%Y-%m-%d").date()
         except ValueError:
             raise SystemExit(f"Bad DATE env-var format: {env_var} (want YYYY-MM-DD)")
-
-    # DEFAULT: run for the listing published ≈4 arXiv business days ago
-    return dt.datetime.utcnow().date() - dt.timedelta(days=5)     # ← only edit
+    # automatic lag (covers manual runs & mis-configured CI)
+    return dt.date.today() - dt.timedelta(days=DEFAULT_DATE_LAG_DAYS)
 
 
 def main():
@@ -198,8 +209,9 @@ def main():
         "token_usage": {
             "preface_call": preface_usage,
             "grand_total": preface_usage.get("total_tokens", 0),
-            "approx_cost_usd": round(preface_usage.get("total_tokens", 0)
-                                     * USD_PER_TOKEN, 4),
+            "approx_cost_usd": round(
+                preface_usage.get("total_tokens", 0) * USD_PER_TOKEN, 4
+            ),
         },
         "preface_prompt_sent": preface_prompt,
     }

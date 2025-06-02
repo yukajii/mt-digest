@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       date:
-        description: "UTC date to fetch (YYYY-MM-DD). Leave blank for automatic (≈4 arXiv business days ago)."
+        description: "UTC date to fetch (YYYY-MM-DD). Leave blank for 4 days ago."
         required: false
         type: string
   schedule:
@@ -24,7 +24,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # 2. cache wheels, HF models, torch --------------------------------
+      # 2. cache wheels, HF models, torch -------------------------------
       - name: Cache pip & models
         uses: actions/cache@v4
         with:
@@ -50,7 +50,8 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.date }}" ]]; then
             echo "DATE=${{ github.event.inputs.date }}" >>"$GITHUB_ENV"
           else
-            echo "DATE=$(date -u -d '5 days ago' +%F)" >>"$GITHUB_ENV"   # ← only edit
+            # arXiv “new submissions” e-mail lags ~4 days → fetch 4 days ago
+            echo "DATE=$(date -u -d '5 days ago' +%F)" >>"$GITHUB_ENV"
           fi
           echo "Digest date: $DATE"
 
