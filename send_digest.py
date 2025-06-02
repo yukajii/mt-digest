@@ -67,7 +67,7 @@ try:
 except ValueError:
     pretty_date = subject_date               # (should never happen)
 
-subject = f"Machine‑Translation Digest for {pretty_date}"
+subject = f"Machine Translation Digest for {pretty_date}"
 
 HEADERS: Dict[str, str] = {
     "Authorization": f"Token {TOKEN}",
