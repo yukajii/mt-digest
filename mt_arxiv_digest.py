@@ -37,7 +37,9 @@ CONCEPTS = [
     "cross-lingual transfer",
     "translation evaluation BLEU COMET chrF",
     "post-editing", "mtpe", "mtqe",
-    "linguistic quality assurance", "lqa", "mqm"
+    "linguistic quality assurance", "lqa", "mqm",
+    "multimodal translation",
+    "video game"
 ]
 
 BASE_DIR = pathlib.Path(__file__).parent
