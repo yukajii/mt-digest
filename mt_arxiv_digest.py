@@ -30,15 +30,13 @@ DEFAULT_DATE_LAG_DAYS = 5
 
 EMBED_MODEL_NAME = "intfloat/e5-large-v2"               # NEW
 CONCEPTS = [
-    "machine translation",
-    "neural machine translation",
-    "NMT", "document-level translation",
-    "low-resource translation",
+    "machine translation", "localization", "globalization", "internationalization",
+    "neural machine translation", "NMT", 
+    "document-level translation",
     "cross-lingual transfer",
     "translation evaluation BLEU COMET chrF",
     "post-editing", "mtpe", "mtqe",
     "linguistic quality assurance", "lqa", "mqm",
-    "multimodal translation",
     "video game"
 ]
 
