@@ -30,14 +30,13 @@ DEFAULT_DATE_LAG_DAYS = 5
 
 EMBED_MODEL_NAME = "intfloat/e5-large-v2"               # NEW
 CONCEPTS = [
-    "machine translation",
+    "machine translation", "translation",
     "neural machine translation",
+    "interpreting", "interpretation",
     "NMT", "document-level translation",
-    "low-resource translation",
-    "cross-lingual transfer",
     "translation evaluation BLEU COMET chrF",
     "post-editing", "mtpe", "mtqe",
-    "linguistic quality assurance", "lqa", "mqm"
+    "linguistic quality assurance"
 ]
 
 BASE_DIR = pathlib.Path(__file__).parent
