@@ -25,15 +25,14 @@ jobs:
         uses: actions/checkout@v4
 
       # 2. cache wheels, HF models, torch -------------------------------
-      - name: Cache pip & models
+      - name: Cache pip
         uses: actions/cache@v4
         with:
           path: |
             ~/.cache/pip
-            ~/.cache/huggingface
-            ~/.cache/torch
-          key: ${{ runner.os }}-mt-digest-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: ${{ runner.os }}-mt-digest-
+          key: ${{ runner.os }}-mt-digest-v2-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: ${{ runner.os }}-mt-digest-v2-
+
 
       # 3. Python --------------------------------------------------------
       - name: Set up Python
