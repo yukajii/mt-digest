@@ -9,7 +9,7 @@ on:
         required: false
         type: string
   schedule:
-    - cron: "20 6 * * *"        # daily 06:20 UTC
+    - cron: "20 7 * * *"        # daily 06:20 UTC
 
 permissions:
   contents: write
