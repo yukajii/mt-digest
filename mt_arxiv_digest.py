@@ -11,7 +11,7 @@ No extra tokens, no external services.
 """
 from __future__ import annotations
 
-import argparse, datetime as dt, json, os, pathlib, re, textwrap, warnings
+import argparse, datetime as dt, json, os, pathlib, re, textwrap, warnings, time
 from typing import List, Dict, Tuple
 
 import numpy as np
@@ -49,21 +49,36 @@ EMBEDDER = SentenceTransformer(EMBED_MODEL_NAME)
 CONCEPT_VECTOR = EMBEDDER.encode(" ; ".join(CONCEPTS), normalize_embeddings=True)
 
 # ── HELPERS ──────────────────────────────────────────────────────────────
-def fetch_cscl(date: dt.date) -> List[Dict]:
+def fetch_cscl(date: dt.date, max_retries: int = 3, backoff_sec: int = 20) -> List[Dict]:
     day = date.strftime("%Y%m%d")
     q = f'cat:cs.CL AND submittedDate:[{day}0000 TO {day}2359]'
-    search  = arxiv.Search(query=q, max_results=MAX_RESULTS,
-                           sort_by=arxiv.SortCriterion.SubmittedDate)
+    search  = arxiv.Search(
+        query=q,
+        max_results=MAX_RESULTS,
+        sort_by=arxiv.SortCriterion.SubmittedDate,
+    )
     client  = arxiv.Client()
-    papers: List[Dict] = []
-    for p in client.results(search):
-        papers.append({
-            "id": p.get_short_id(),
-            "title": p.title.strip().replace("\n", " "),
-            "abstract": re.sub(r"\s+", " ", p.summary.strip()),
-            "url": p.pdf_url,
-        })
-    return papers
+    attempt = 1
+    while True:
+        try:
+            papers: List[Dict] = []
+            for p in client.results(search):
+                papers.append({
+                    "id": p.get_short_id(),
+                    "title": p.title.strip().replace("\n", " "),
+                    "abstract": re.sub(r"\s+", " ", p.summary.strip()),
+                    "url": p.pdf_url,
+                })
+            return papers
+        except arxiv.HTTPError as e:  # transient issues: 429/503 etc.
+            print(f"[warn] arxiv HTTPError on attempt {attempt}/{max_retries}: {e}")
+            if attempt >= max_retries:
+                # Bubble up so CI fails clearly instead of silently skipping.
+                raise
+            sleep_for = backoff_sec * attempt
+            print(f"[info] retrying arxiv in {sleep_for} seconds...")
+            time.sleep(sleep_for)
+            attempt += 1
 
 
 def rank_mt_papers(papers: List[Dict], max_picks: int) -> List[int]:
