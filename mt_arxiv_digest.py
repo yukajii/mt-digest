@@ -17,7 +17,7 @@ from sentence_transformers import SentenceTransformer
 # ── CONSTANTS ────────────────────────────────────────────────────────────
 MAX_RESULTS       = 222
 DEFAULT_MAX_PICKS = 5
-PREFACE_MODEL     = "gpt-5.4"
+PREFACE_MODEL     = "gpt-5.4-mini"
 USD_PER_TOKEN     = 0.000005
 
 DEFAULT_DATE_LAG_DAYS = 5
@@ -95,7 +95,6 @@ def openai_chat(model: str, system: str, user: str, temperature: float = 0):
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        reasoning={"effort": "medium"},
     )
 
     text = response.output_text
