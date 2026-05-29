@@ -51,6 +51,13 @@ jobs:
             DATE="${{ github.event.inputs.date }}"
           else
             DATE="$(date -u -d '5 days ago' +%F)"
+            # Roll back to Friday if the target date lands on a weekend
+            DOW="$(date -u -d "$DATE" +%u)"   # 1=Mon … 6=Sat, 7=Sun
+            if [[ "$DOW" -eq 6 ]]; then
+              DATE="$(date -u -d "$DATE -1 day" +%F)"
+            elif [[ "$DOW" -eq 7 ]]; then
+              DATE="$(date -u -d "$DATE -2 days" +%F)"
+            fi
           fi
 
           echo "DATE=$DATE" >> "$GITHUB_ENV"

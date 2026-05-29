@@ -178,7 +178,12 @@ def resolve_target_date(cli_pos, cli_flag, env_var):
         return cli_flag
     if env_var:
         return dt.datetime.strptime(env_var, "%Y-%m-%d").date()
-    return dt.date.today() - dt.timedelta(days=DEFAULT_DATE_LAG_DAYS)
+    d = dt.date.today() - dt.timedelta(days=DEFAULT_DATE_LAG_DAYS)
+    if d.weekday() == 5:   # Saturday → Friday
+        d -= dt.timedelta(days=1)
+    elif d.weekday() == 6: # Sunday → Friday
+        d -= dt.timedelta(days=2)
+    return d
 
 
 def main():
