@@ -46,7 +46,7 @@ CONCEPT_VECTOR = EMBEDDER.encode(" ; ".join(CONCEPTS), normalize_embeddings=True
 client = OpenAI()
 
 # ── HELPERS ──────────────────────────────────────────────────────────────
-def fetch_cscl(date: dt.date, max_retries: int = 3, backoff_sec: int = 20) -> List[Dict]:
+def fetch_cscl(date: dt.date, max_retries: int = 5, backoff_sec: int = 60) -> List[Dict]:
     day = date.strftime("%Y%m%d")
     q = f'cat:cs.CL AND submittedDate:[{day}0000 TO {day}2359]'
     search  = arxiv.Search(
@@ -54,7 +54,9 @@ def fetch_cscl(date: dt.date, max_retries: int = 3, backoff_sec: int = 20) -> Li
         max_results=MAX_RESULTS,
         sort_by=arxiv.SortCriterion.SubmittedDate,
     )
-    client_arxiv  = arxiv.Client()
+    # num_retries=0 disables the library's own retry loop so our backoff
+    # logic below is the sole retry mechanism (avoids 9 rapid-fire requests)
+    client_arxiv  = arxiv.Client(num_retries=0)
     attempt = 1
     while True:
         try:
