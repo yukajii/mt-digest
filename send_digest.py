@@ -72,6 +72,11 @@ subject = f"Machine Translation Digest for {pretty_date}"
 HEADERS: Dict[str, str] = {
     "Authorization": f"Token {TOKEN}",
     "Content-Type": "application/json",
+    # Buttondown's 2026-04-01 API version requires a one-time confirmation
+    # before POST /emails will accept status=about_to_send (it otherwise
+    # returns 400 sending_requires_confirmation). This header opts in to
+    # sending straight from the API and is ignored on older API versions.
+    "X-Buttondown-Live-Dangerously": "true",
 }
 
 # ── 1⃣ Try to create‑and‑send in one go ────────────────────────────────
@@ -80,8 +85,9 @@ print("⏳ Creating + queuing e‑mail…")
 payload: Dict[str, Any] = {
     "subject": subject,
     "body": md_path.read_text(encoding="utf-8"),
-    "markdown": True,
-    "publish_url": False,
+    # NB: Buttondown no longer accepts the `markdown` / `publish_url` fields
+    # (they now trigger a 422 extra_forbidden error). The body format is
+    # auto-detected, and markdown digests are rendered as markdown.
     "status": "about_to_send",        # <- queues for delivery instantly
 }
 
