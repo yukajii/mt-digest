@@ -6,7 +6,7 @@ Updated for OpenAI GPT-5 + Responses API
 
 from __future__ import annotations
 
-import argparse, datetime as dt, json, os, pathlib, re, textwrap, warnings, time
+import argparse, datetime as dt, json, os, pathlib, random, re, textwrap, warnings, time
 from typing import List, Dict, Tuple
 
 import numpy as np
@@ -46,7 +46,19 @@ CONCEPT_VECTOR = EMBEDDER.encode(" ; ".join(CONCEPTS), normalize_embeddings=True
 client = OpenAI()
 
 # ── HELPERS ──────────────────────────────────────────────────────────────
-def fetch_cscl(date: dt.date, max_retries: int = 5, backoff_sec: int = 60) -> List[Dict]:
+# arXiv throttles anonymous automated traffic (esp. from shared cloud IPs
+# like GitHub Actions runners) and responds with HTTP 429. Identify the
+# client politely — arXiv asks automated tools to do so — to reduce blocks.
+ARXIV_USER_AGENT = "mt-digest/1.0 (+https://github.com/yukajii/mt-digest)"
+
+# Backoff tuning for the 429 retry loop below.
+ARXIV_MAX_RETRIES = 6
+ARXIV_BACKOFF_BASE = 30    # seconds; grows exponentially per attempt
+ARXIV_BACKOFF_CAP = 300    # seconds; ceiling on any single wait
+ARXIV_BACKOFF_JITTER = 15  # seconds; random spread added to each wait
+
+
+def fetch_cscl(date: dt.date, max_retries: int = ARXIV_MAX_RETRIES) -> List[Dict]:
     day = date.strftime("%Y%m%d")
     q = f'cat:cs.CL AND submittedDate:[{day}0000 TO {day}2359]'
     search  = arxiv.Search(
@@ -55,8 +67,15 @@ def fetch_cscl(date: dt.date, max_retries: int = 5, backoff_sec: int = 60) -> Li
         sort_by=arxiv.SortCriterion.SubmittedDate,
     )
     # num_retries=0 disables the library's own retry loop so our backoff
-    # logic below is the sole retry mechanism (avoids 9 rapid-fire requests)
-    client_arxiv  = arxiv.Client(num_retries=0)
+    # logic below is the sole retry mechanism (avoids rapid-fire requests).
+    # delay_seconds paces our own page requests to stay under arXiv's limit.
+    client_arxiv  = arxiv.Client(num_retries=0, delay_seconds=5.0)
+    # Send an identifying User-Agent (best-effort; guards against library
+    # internals changing the session attribute name).
+    session = getattr(client_arxiv, "_session", None)
+    if session is not None:
+        session.headers.update({"User-Agent": ARXIV_USER_AGENT})
+
     attempt = 1
     while True:
         try:
@@ -73,8 +92,12 @@ def fetch_cscl(date: dt.date, max_retries: int = 5, backoff_sec: int = 60) -> Li
             print(f"[warn] arxiv HTTPError on attempt {attempt}/{max_retries}: {e}")
             if attempt >= max_retries:
                 raise
-            sleep_for = backoff_sec * attempt
-            print(f"[info] retrying arxiv in {sleep_for} seconds...")
+            # Exponential backoff with jitter: spreading retries out gives a
+            # transient 429 / IP throttle time to clear instead of hammering.
+            sleep_for = min(
+                ARXIV_BACKOFF_BASE * (2 ** (attempt - 1)), ARXIV_BACKOFF_CAP
+            ) + random.uniform(0, ARXIV_BACKOFF_JITTER)
+            print(f"[info] retrying arxiv in {sleep_for:.0f} seconds...")
             time.sleep(sleep_for)
             attempt += 1
 
