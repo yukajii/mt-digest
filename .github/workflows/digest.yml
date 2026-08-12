@@ -9,7 +9,14 @@ on:
         required: false
         type: string
   schedule:
-    - cron: "20 7 * * *"        # daily 07:20 UTC
+    # arXiv occasionally blocks the runner's shared IP with HTTP 429. These
+    # runs all resolve to the SAME target date (5 days ago), so the later
+    # times act as reattempts if an earlier one is throttled. The Buttondown
+    # send is idempotent and a guard step skips runs whose digest already
+    # went out, so extra attempts are cheap no-ops on successful days.
+    - cron: "20 7 * * *"         # daily 07:20 UTC (primary)
+    - cron: "20 11 * * *"        # reattempt #1
+    - cron: "20 15 * * *"        # reattempt #2
 
 permissions:
   contents: write
@@ -24,24 +31,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v5
 
-      # 2. cache ONLY pip (no HF / torch dirs) ---------------------------
-      - name: Cache pip
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-mt-digest-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: ${{ runner.os }}-mt-digest-
-
-      # 3. Python --------------------------------------------------------
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      # 4. pick the DATE -------------------------------------------------
+      # 2. pick the DATE (bash only, no deps) so the guard can run cheaply
       - name: Determine DATE
         run: |
           # Decide the target date:
@@ -63,8 +53,38 @@ jobs:
           echo "DATE=$DATE" >> "$GITHUB_ENV"
           echo "Digest date (resolved): $DATE"
 
-      # 5. build + send --------------------------------------------------
+      # 3. skip guard: if this digest already went out (e.g. an earlier
+      #    reattempt today succeeded), skip the heavy steps below and avoid
+      #    re-hitting arXiv. Never fails the build (defaults to "proceed").
+      - name: Skip if already sent
+        id: guard
+        env:
+          BUTTONDOWN_TOKEN: ${{ secrets.BUTTONDOWN_TOKEN }}
+        run: python3 check_already_sent.py "$DATE"
+
+      # 4. cache ONLY pip (no HF / torch dirs) ---------------------------
+      - name: Cache pip
+        if: success() && steps.guard.outputs.already_sent != 'true'
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-mt-digest-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: ${{ runner.os }}-mt-digest-
+
+      # 5. Python --------------------------------------------------------
+      - name: Set up Python
+        if: success() && steps.guard.outputs.already_sent != 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        if: success() && steps.guard.outputs.already_sent != 'true'
+        run: pip install -r requirements.txt
+
+      # 6. build + send --------------------------------------------------
       - name: Build and send digest
+        if: success() && steps.guard.outputs.already_sent != 'true'
         env:
           OPENAI_API_KEY:   ${{ secrets.OPENAI_API_KEY }}
           BUTTONDOWN_TOKEN: ${{ secrets.BUTTONDOWN_TOKEN }}
@@ -72,8 +92,9 @@ jobs:
           python mt_arxiv_digest.py "$DATE"
           python send_digest.py "mt_digest_${DATE}.md"
 
-      # 6. artefacts (private, 30 d retention) ---------------------------
+      # 7. artefacts (private, 30 d retention) ---------------------------
       - name: Upload Markdown digest
+        if: success() && steps.guard.outputs.already_sent != 'true'
         uses: actions/upload-artifact@v6
         with:
           name: mt_digest_md-${{ env.DATE }}
@@ -81,6 +102,7 @@ jobs:
           retention-days: 30
 
       - name: Upload JSON log
+        if: success() && steps.guard.outputs.already_sent != 'true'
         uses: actions/upload-artifact@v6
         with:
           name: mt_digest_log-${{ env.DATE }}
