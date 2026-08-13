@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: write
+  actions: read          # guard step lists artifacts to detect an already-sent digest
 
 # ── job ─────────────────────────────────────────────────────────────────
 jobs:
@@ -59,7 +60,7 @@ jobs:
       - name: Skip if already sent
         id: guard
         env:
-          BUTTONDOWN_TOKEN: ${{ secrets.BUTTONDOWN_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 check_already_sent.py "$DATE"
 
       # 4. cache ONLY pip (no HF / torch dirs) ---------------------------

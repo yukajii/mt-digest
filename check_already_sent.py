@@ -2,33 +2,36 @@
 """
 check_already_sent.py <YYYY-MM-DD>
 
-Guard for the digest workflow's reattempt schedule. The workflow runs a few
-times per UTC day so a transient arXiv block at one run time doesn't strand
-the day's digest. All those runs target the *same* date, so this guard asks
-Buttondown whether that digest is already sent/queued and, if so, writes
-`already_sent=true` to $GITHUB_OUTPUT — letting the workflow skip the heavy
-generation + send steps (and, importantly, avoid re-hitting arXiv) on days
-that already succeeded.
+Guard for the digest workflow's same-day reattempt schedule. The workflow
+runs a few times per UTC day so a transient arXiv block at one run time
+doesn't strand the day's digest — but every run targets the SAME date, so
+without a guard the later runs would send the newsletter a second time.
 
-Uses only the Python standard library (no pip install needed) and never
-fails the build: on any error it reports already_sent=false so a genuine
-run can proceed.
+Signal used: a run uploads the `mt_digest_md-<DATE>` artifact only AFTER it
+has successfully built *and* sent the digest. So the presence of that
+artifact is a reliable, self-contained marker that the day's digest already
+went out. (An earlier attempt that reused Buttondown's `?search=` lookup was
+unreliable and let a reattempt re-send — the artifact check is deterministic
+and fully under our control.)
+
+This script asks the GitHub API whether that artifact exists and, if so,
+writes `already_sent=true` to $GITHUB_OUTPUT, letting the workflow skip the
+heavy generation + send steps (and avoid re-hitting arXiv).
+
+Uses only the Python standard library and never fails the build: on any
+error it reports already_sent=false so a genuine run can proceed.
+
+Requires GITHUB_TOKEN (with `actions: read`) and GITHUB_REPOSITORY, both
+provided automatically inside GitHub Actions.
 """
 from __future__ import annotations
 
 import json
 import os
 import sys
-import urllib.parse
 import urllib.request
-from datetime import datetime
 
-BTN_API = "https://api.buttondown.email/v1"
-
-# Statuses that mean the digest is already delivered or on its way, so a
-# reattempt run should skip. A lone `draft` is deliberately NOT here: a stuck
-# draft should be retried (send_digest.py finalises it to about_to_send).
-DONE_STATUSES = {"about_to_send", "in_flight", "sent", "scheduled", "imported"}
+API = "https://api.github.com"
 
 
 def emit(already_sent: bool) -> None:
@@ -47,33 +50,31 @@ def main() -> None:
         return
 
     date_str = sys.argv[1]
-    token = os.getenv("BUTTONDOWN_TOKEN")
-    if not token:
-        # No token → can't check; let the run proceed (the send step will
-        # error loudly if the token really is missing).
+    repo = os.getenv("GITHUB_REPOSITORY")     # e.g. "yukajii/mt-digest"
+    token = os.getenv("GITHUB_TOKEN")
+    if not repo or not token:
+        # Outside Actions or missing token → can't check; let the run proceed.
         emit(False)
         return
 
-    try:
-        pretty = datetime.strptime(date_str, "%Y-%m-%d").strftime("%b %d %Y")
-    except ValueError:
-        emit(False)
-        return
-    subject = f"Machine Translation Digest for {pretty}"
-
-    url = f"{BTN_API}/emails?search=" + urllib.parse.quote_plus(subject)
-    req = urllib.request.Request(url, headers={"Authorization": f"Token {token}"})
+    name = f"mt_digest_md-{date_str}"
+    url = f"{API}/repos/{repo}/actions/artifacts?name={name}&per_page=100"
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    })
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception as e:  # network / API hiccup → don't block a real run
-        print(f"[warn] Buttondown check failed, proceeding anyway: {e}", file=sys.stderr)
+        print(f"[warn] artifact check failed, proceeding anyway: {e}", file=sys.stderr)
         emit(False)
         return
 
-    for email in data.get("results", []):
-        if email.get("subject") == subject and email.get("status") in DONE_STATUSES:
-            print(f"✓ Digest for {date_str} already '{email.get('status')}' → skipping")
+    for art in data.get("artifacts", []):
+        if art.get("name") == name and not art.get("expired", False):
+            print(f"✓ Digest for {date_str} already produced (artifact {name}) → skipping")
             emit(True)
             return
 
