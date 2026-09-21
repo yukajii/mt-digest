@@ -46,6 +46,7 @@ HuggingFace cache.
 --date YYYY-MM-DD   same thing as a flag
 --max N             include at most N papers (default: 5)
 --min-z Z           relevance floor in std devs above the batch mean (default: 2.0)
+--min-picks N       always keep at least N papers, even below the floor (default: 2)
 --print-date        print the resolved announcement date and exit
 ```
 
@@ -146,21 +147,41 @@ Measured over fourteen consecutive announcement batches (2026-09-01 to
 | z >= 2.2 | 1.9 | 1 of 14 |
 | z >= 2.5 | 1.5 | 3 of 14 |
 
-Two consequences worth knowing before changing the value:
+### Never an empty issue
 
-- **Some batches produce no issue at all.** The 2026-09-02 batch topped out at
-  z = 1.86 with everything bunched below it, so nothing clears 2.0 and no `.md`
-  is written. The workflow treats that as a quiet day rather than a failure: it
-  skips the send and still uploads the run log, which is what you would tune
-  the floor from.
-- **2.0 is a compromise, not a clean separator.** On 2026-08-25 it still admits
-  one paper (z = 2.13, machine-generated-text detection, not MT). Raising to
-  2.2 empties that batch correctly but also costs the English-Syriac paper on
-  2026-09-16 (z = 2.14), which is a genuine pick. Dropping a real paper was
-  judged worse than admitting a marginal one on a rare flat batch.
+`MIN_PICKS` (default **2**) overrides the floor from below: the top two papers
+are always kept, whatever they score. A couple of loosely relevant papers beats
+a missing issue.
 
-Override per run with `--min-z`, or change `MIN_RELEVANCE_Z`. Pass a large
-negative number to restore the old always-five behaviour.
+The minimum is deliberately small. Over the same fourteen batches:
+
+| `MIN_PICKS` | mean papers/issue | empty issues | batches padded below the floor |
+| ----------- | ----------------- | ------------ | ------------------------------ |
+| 0 (floor only) | 2.57 | 1 | 0 |
+| 1 | 2.64 | 0 | 1 |
+| **2** | **2.79** | **0** | **2** |
+| 3 | 3.29 | 0 | 7 |
+
+At 3 the minimum would pad half the batches and the floor would stop meaning
+much. At 2 it engages twice in fourteen, which is where it is actually needed:
+2026-09-02 (nothing above z = 1.86) and 2026-09-06 (one paper above the floor).
+
+A pick admitted this way is flagged `below_floor` in the run log, and the
+preface prompt is told how many there were, with an instruction to say so
+plainly. That is the guard against the original failure mode - padded picks
+written up as though they were a coherent day of MT research.
+
+### One caveat on the value
+
+**2.0 is a compromise, not a clean separator.** On 2026-08-25 it admits one
+paper on merit (z = 2.13, machine-generated-text detection, not MT). Raising to
+2.2 would reject that batch correctly but also costs the English-Syriac paper
+on 2026-09-16 (z = 2.14), a genuine pick. Dropping a real paper was judged
+worse than admitting a marginal one on a rare flat batch.
+
+Override per run with `--min-z` and `--min-picks`, or change
+`MIN_RELEVANCE_Z` / `MIN_PICKS`. A large negative `--min-z` restores the old
+always-five behaviour.
 
 ## Issue format
 

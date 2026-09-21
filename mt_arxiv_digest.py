@@ -28,9 +28,15 @@ DEFAULT_DATE_LAG_DAYS = 5
 
 # Relevance floor, in standard deviations above the batch's own mean score.
 # Anything below this is dropped even if it would otherwise make the top 5,
-# so a thin batch yields a short issue instead of three padded slots. See
+# so a thin batch yields a short issue instead of five padded slots. See
 # "Relevance floor" in the README for the measurements behind the value.
 MIN_RELEVANCE_Z = 2.0
+
+# ...but never ship an empty issue. A couple of loosely relevant papers beat
+# nothing at all, so the top MIN_PICKS are kept whatever their score. Over
+# fourteen batches this padded below the floor only twice, where raising it
+# to three would have padded seven - which would defeat the floor entirely.
+MIN_PICKS = 2
 
 EMBED_MODEL_NAME = "intfloat/e5-large-v2"
 CONCEPTS = [
@@ -308,13 +314,15 @@ def fetch_cscl(window: Tuple[dt.datetime, dt.datetime],
 
 
 def rank_mt_papers(papers: List[Dict], max_picks: int,
-                   min_z: float = MIN_RELEVANCE_Z) -> Tuple[List[int], List[Dict]]:
+                   min_z: float = MIN_RELEVANCE_Z,
+                   min_picks: int = MIN_PICKS) -> Tuple[List[int], List[Dict]]:
     """Return (1-based picked indices, per-paper ranking detail).
 
-    Cosine similarity against the blended concept vector, e5 prefixes on
-    both sides, then two cuts: keep at most `max_picks`, and drop anything
-    below `min_z`. The floor is what makes issue length follow the day
-    instead of always padding to five.
+    Cosine similarity against the blended concept vector, e5 prefixes on both
+    sides, then three cuts: keep at most `max_picks`, drop anything below
+    `min_z`, but always keep at least `min_picks` so a flat batch still
+    produces an issue. Detail entries carry `below_floor` so the log, and the
+    preface, can tell a padded pick from an earned one.
     """
     cvec = concept_vector()                                     # (dim,)
     texts = [f"passage: {p['title']} {p['abstract']}" for p in papers]
@@ -333,6 +341,9 @@ def rank_mt_papers(papers: List[Dict], max_picks: int,
     def zscore(i) -> float:
         return round((float(scores[i]) - mean) / std, 3) if std else 0.0
 
+    n_above = sum(1 for i in order[:max_picks] if zscore(i) >= min_z)
+    n_keep = min(max_picks, max(n_above, min_picks), len(order))
+
     detail = [
         {
             "rank": rank,
@@ -344,17 +355,21 @@ def rank_mt_papers(papers: List[Dict], max_picks: int,
             # narrow band (0.72-0.83) whatever the day held, so only the
             # relative figure carries usable signal.
             "z": zscore(i),
-            "picked": rank <= max_picks and zscore(i) >= min_z,
+            "picked": rank <= n_keep,
+            "below_floor": rank <= n_keep and zscore(i) < min_z,
         }
         for rank, i in enumerate(order, start=1)
     ]
 
-    picks = [int(i) + 1 for i in order[:max_picks] if zscore(i) >= min_z]
+    picks = [int(i) + 1 for i in order[:n_keep]]
 
-    dropped = max_picks - len(picks)
-    if dropped > 0:
-        print(f"[info] relevance floor z>={min_z} kept {len(picks)} of "
+    padded = n_keep - n_above
+    if n_keep < max_picks:
+        print(f"[info] relevance floor z>={min_z} kept {n_above} of "
               f"{max_picks} candidate slots")
+    if padded > 0:
+        print(f"[info] batch is thin: padding to the {min_picks}-paper minimum "
+              f"with {padded} paper(s) below the floor")
     return picks, detail
 
 
@@ -401,7 +416,8 @@ PREFACE_ANGLES = [
 BANNED_OPENERS = ("today", "this digest", "in today", "this week", "welcome")
 
 
-def draft_preface(date: dt.date, papers: List[Dict], picks: List[int]):
+def draft_preface(date: dt.date, papers: List[Dict], picks: List[int],
+                  n_below_floor: int = 0):
     chosen = [papers[i - 1] for i in picks] if picks else []
     block = "\n\n".join(
         f"- {p['title']}\n  {clean_abstract(p['abstract'])[:600]}" for p in chosen
@@ -409,12 +425,25 @@ def draft_preface(date: dt.date, papers: List[Dict], picks: List[int]):
 
     angle = PREFACE_ANGLES[date.toordinal() % len(PREFACE_ANGLES)]
 
+    # When the batch was too thin to fill the issue on merit, say so. The
+    # alternative is the Aug 25 failure mode: padded picks written up as
+    # though they were a coherent day of MT research.
+    thin_note = ""
+    if n_below_floor:
+        thin_note = (
+            f"\n        This batch was thin: {n_below_floor} of the "
+            f"{len(chosen)} papers below scored under our relevance bar and "
+            "are included only so the issue is not empty. Say so in passing, "
+            "plainly and without apologising, and do not imply the set hangs "
+            "together better than it does.\n"
+        )
+
     user_msg = textwrap.dedent(f"""
         Write the introduction for the {date.isoformat()} issue. Two or three
         sentences, no heading, no list, no sign-off.
 
         {angle}
-
+        {thin_note}
         Hard constraints:
         - Do not begin with "Today", "This digest", "In today's", or any variant.
           Vary the sentence shape from issue to issue.
@@ -630,6 +659,10 @@ def main():
                     type=lambda s: dt.datetime.strptime(s, "%Y-%m-%d").date())
     ap.add_argument("--max", dest="max_picks", type=int,
                     default=DEFAULT_MAX_PICKS)
+    ap.add_argument("--min-picks", dest="min_picks", type=int,
+                    default=MIN_PICKS,
+                    help="Always include at least this many papers, even "
+                         f"below the floor (default: {MIN_PICKS}).")
     ap.add_argument("--min-z", dest="min_z", type=float,
                     default=MIN_RELEVANCE_Z,
                     help="Relevance floor in standard deviations above the "
@@ -658,24 +691,27 @@ def main():
         print(f"No cs.CL papers in the {target_date} batch - nothing to send.")
         return
 
-    picks, ranking = rank_mt_papers(papers, ns.max_picks, ns.min_z)
+    picks, ranking = rank_mt_papers(papers, ns.max_picks, ns.min_z, ns.min_picks)
     if not picks:
-        top = ranking[0]
-        print(f"[info] nothing in the {target_date} batch cleared z>="
-              f"{ns.min_z} (best was {top['z']:+.2f}, {top['title'][:60]!r}) "
+        # Only reachable when the batch itself came back empty, since the
+        # minimum keeps at least MIN_PICKS whenever there is anything to keep.
+        print(f"[info] the {target_date} batch yielded no rankable papers "
               "- no issue written.")
         write_log(target_date, {
             "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
             "target_date": target_date.isoformat(),
             "total_papers": len(papers),
-            "skipped": "no paper cleared the relevance floor",
+            "skipped": "no rankable papers",
             "min_relevance_z": ns.min_z,
             "ranking_top_15": ranking[:15],
         })
         return
 
+    n_below_floor = sum(1 for r in ranking if r.get("below_floor"))
+
     takeaways, takeaway_usage = draft_takeaways(papers, picks)
-    preface, preface_prompt, preface_usage = draft_preface(target_date, papers, picks)
+    preface, preface_prompt, preface_usage = draft_preface(
+        target_date, papers, picks, n_below_floor)
     md_path = write_md(target_date, preface, papers, picks, takeaways, window)
 
     total_in = (preface_usage.get("input_tokens", 0)
@@ -693,7 +729,9 @@ def main():
         "picked_scores": [r["score"] for r in ranking if r["picked"]],
         "picked_z": [r["z"] for r in ranking if r["picked"]],
         "min_relevance_z": ns.min_z,
+        "min_picks": ns.min_picks,
         "n_picked": len(picks),
+        "n_below_floor": n_below_floor,
         "ranking_top_15": ranking[:15],
         "takeaways": takeaways,
         "token_usage": {
