@@ -8,6 +8,11 @@ on:
         description: "UTC date to fetch (YYYY-MM-DD). Leave blank for 5 days ago."
         required: false
         type: string
+      dry_run:
+        description: "Build the issue and print it, but do NOT send to Buttondown."
+        required: false
+        type: boolean
+        default: false
   schedule:
     # arXiv occasionally blocks the runner's shared IP with HTTP 429. These
     # runs all resolve to the SAME target date (5 days ago), so the later
@@ -58,8 +63,12 @@ jobs:
       # 3. skip guard: if this digest already went out (e.g. an earlier
       #    reattempt today succeeded), skip the heavy steps below and avoid
       #    re-hitting arXiv. Never fails the build (defaults to "proceed").
+      #    A dry run deliberately skips this: it never sends, so "already
+      #    sent" is not a reason to stop, and re-running a past date is the
+      #    whole point of the mode.
       - name: Skip if already sent
         id: guard
+        if: github.event.inputs.dry_run != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 check_already_sent.py "$DATE"
@@ -96,32 +105,52 @@ jobs:
           key: ${{ runner.os }}-hf-e5-large-v2
           restore-keys: ${{ runner.os }}-hf-
 
-      # 6. build + send --------------------------------------------------
-      - name: Build and send digest
+      # 6. build ---------------------------------------------------------
+      - name: Build digest
         if: success() && steps.guard.outputs.already_sent != 'true'
         env:
-          OPENAI_API_KEY:   ${{ secrets.OPENAI_API_KEY }}
-          BUTTONDOWN_TOKEN: ${{ secrets.BUTTONDOWN_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python mt_arxiv_digest.py "$DATE"
+
+      # 6b. dry run stops here, after printing what it would have sent.
+      #     BUTTONDOWN_TOKEN is never put in this job's environment on a dry
+      #     run, so the send cannot happen even by accident.
+      - name: Show generated issue (dry run only)
+        if: github.event.inputs.dry_run == 'true'
         run: |
-          python mt_arxiv_digest.py "$DATE"
-          python send_digest.py "mt_digest_${DATE}.md"
+          echo "::notice::DRY RUN - nothing was sent to Buttondown."
+          echo "===== mt_digest_${DATE}.md ====="
+          cat "mt_digest_${DATE}.md"
+          echo "===== end ====="
+          echo "===== run log ====="
+          cat "logs/mt_digest_${DATE}.log"
+
+      # 6c. send ---------------------------------------------------------
+      - name: Send digest
+        if: success() && steps.guard.outputs.already_sent != 'true' && github.event.inputs.dry_run != 'true'
+        env:
+          BUTTONDOWN_TOKEN: ${{ secrets.BUTTONDOWN_TOKEN }}
+        run: python send_digest.py "mt_digest_${DATE}.md"
 
       # 7. artefacts (private, 30 d retention) ---------------------------
+      # The `mt_digest_md-<DATE>` artifact IS the already-sent marker that
+      # check_already_sent.py looks for, so a dry run must never publish it
+      # under that name - doing so would make a later real run skip the date.
       - name: Upload Markdown digest
         if: success() && steps.guard.outputs.already_sent != 'true'
         uses: actions/upload-artifact@v6
         with:
-          name: mt_digest_md-${{ env.DATE }}
+          name: mt_digest${{ github.event.inputs.dry_run == 'true' && '_DRYRUN' || '' }}_md-${{ env.DATE }}
           path: mt_digest_${{ env.DATE }}.md
-          retention-days: 30
+          retention-days: ${{ github.event.inputs.dry_run == 'true' && 7 || 30 }}
 
       - name: Upload JSON log
         if: success() && steps.guard.outputs.already_sent != 'true'
         uses: actions/upload-artifact@v6
         with:
-          name: mt_digest_log-${{ env.DATE }}
+          name: mt_digest${{ github.event.inputs.dry_run == 'true' && '_DRYRUN' || '' }}_log-${{ env.DATE }}
           path: logs/*.log
-          retention-days: 30
+          retention-days: ${{ github.event.inputs.dry_run == 'true' && 7 || 30 }}
 
       # 8. report a failure that the reattempts did not rescue ------------
       #    Only the last cron of the day reports. An earlier run failing on
