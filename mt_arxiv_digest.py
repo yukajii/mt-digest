@@ -415,6 +415,88 @@ PREFACE_ANGLES = [
 
 BANNED_OPENERS = ("today", "this digest", "in today", "this week", "welcome")
 
+_TITLE_BANNED = ("machine translation digest", "daily mt picks", "mt digest",
+                 "today's", "a look at", "a roundup", "roundup of",
+                 "this week", "this issue", "digest for")
+
+
+def _tidy_title(text: str) -> str:
+    """Trim a headline down to something usable, or return '' if it is not."""
+    t = " ".join(text.split()).strip().strip('"').strip("'").rstrip(".")
+    # Models like to prepend a label; keep the half that carries the content.
+    if ":" in t:
+        head, tail = t.split(":", 1)
+        if head.strip().lower().rstrip("s") in ("mt digest", "digest", "issue",
+                                                "headline", "title"):
+            t = tail.strip()
+    low = t.lower()
+    if not t or len(t.split()) > 14 or any(b in low for b in _TITLE_BANNED):
+        return ""
+
+    # Stripping a label can leave a lowercase opener. Capitalise it only when
+    # the first word is plain lowercase letters, so "chrF", "e5" and "mBERT"
+    # keep the casing they are meant to have.
+    first = t.split()[0]
+    if first.isalpha() and first.islower():
+        t = t[0].upper() + t[1:]
+    return t
+
+
+def draft_title(date: dt.date, papers: List[Dict], picks: List[int],
+                takeaways: List[str] | None = None):
+    """A headline naming what the issue is actually about.
+
+    "Machine Translation Digest for Sep 16 2026" is a filing label, not
+    something anyone searches for. This becomes the <h1> and <title> on the
+    yukajii.com page. The e-mail subject is deliberately left alone: the
+    Buttondown slug and the already-sent guard both key off it.
+
+    Returns ("", usage) on any failure - the page falls back to the dated
+    title rather than the issue being blocked on a nicety.
+    """
+    chosen = [papers[i - 1] for i in picks]
+    listing = "\n".join(
+        f"- {p['title']}"
+        + (f"\n  ({takeaways[n]})"
+           if takeaways and n < len(takeaways) and takeaways[n] else "")
+        for n, p in enumerate(chosen)
+    )
+
+    user_msg = textwrap.dedent(f"""
+        Write one headline for this issue of a machine-translation research
+        digest. It goes at the top of a web page, so it has to say what the
+        issue is about to someone who has not read it.
+
+        Rules:
+        - Four to twelve words. No date, no issue number, no trailing period.
+        - Name the actual subject matter: the task, metric, language or
+          benchmark. "Quality estimation, corpus sampling and two new
+          low-resource benchmarks" is the right shape.
+        - Sentence case, not Title Case.
+        - Do not use the words "digest", "roundup", "today", "this week",
+          "a look at", or the newsletter's name.
+        - No colon-and-subtitle construction. One phrase.
+        - If the papers have little in common, name the two strongest rather
+          than inventing a theme that is not there.
+
+        Reply with the headline alone and nothing else.
+
+        Papers:
+        {listing}
+    """).strip()
+
+    empty = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    try:
+        reply, usage = openai_chat(PREFACE_MODEL, EDITOR_SYSTEM, user_msg)
+    except Exception as e:                      # noqa: BLE001 - never block the send
+        print(f"[warn] title call failed, falling back to the dated title: {e}")
+        return "", empty
+
+    title = _tidy_title(reply)
+    if not title:
+        print(f"[warn] unusable title {reply[:70]!r}, falling back to the dated title")
+    return title, usage
+
 
 def draft_preface(date: dt.date, papers: List[Dict], picks: List[int],
                   n_below_floor: int = 0):
@@ -710,20 +792,27 @@ def main():
     n_below_floor = sum(1 for r in ranking if r.get("below_floor"))
 
     takeaways, takeaway_usage = draft_takeaways(papers, picks)
+    title, title_usage = draft_title(target_date, papers, picks, takeaways)
     preface, preface_prompt, preface_usage = draft_preface(
         target_date, papers, picks, n_below_floor)
     md_path = write_md(target_date, preface, papers, picks, takeaways, window)
 
-    total_in = (preface_usage.get("input_tokens", 0)
-                + takeaway_usage.get("input_tokens", 0))
-    total_out = (preface_usage.get("output_tokens", 0)
-                 + takeaway_usage.get("output_tokens", 0))
+    if title:
+        print(f'[ok] title: "{title}"')
+
+    calls = (preface_usage, takeaway_usage, title_usage)
+    total_in = sum(u.get("input_tokens", 0) for u in calls)
+    total_out = sum(u.get("output_tokens", 0) for u in calls)
     approx_cost = (total_in / 1_000_000 * USD_PER_MTOK_IN
                    + total_out / 1_000_000 * USD_PER_MTOK_OUT)
 
     log_dict = {
         "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "target_date": target_date.isoformat(),
+        # The web headline. Empty means the page falls back to a dated title.
+        # This is how the title reaches yukajii.com: the .md stays a clean
+        # e-mail body, and the sync step reads its metadata from here.
+        "title": title,
         "total_papers": len(papers),
         "picked_indices": picks,
         "picked_scores": [r["score"] for r in ranking if r["picked"]],
@@ -737,8 +826,8 @@ def main():
         "token_usage": {
             "preface_call": preface_usage,
             "takeaway_call": takeaway_usage,
-            "grand_total": (preface_usage.get("total_tokens", 0)
-                            + takeaway_usage.get("total_tokens", 0)),
+            "title_call": title_usage,
+            "grand_total": sum(u.get("total_tokens", 0) for u in calls),
             "approx_cost_usd": round(approx_cost, 6),
         },
         "preface_prompt_sent": preface_prompt,

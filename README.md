@@ -110,8 +110,8 @@ within a minute of a deadline.
 2. Embed title + abstract with e5-large-v2.
 3. Score each paper against the `CONCEPTS` list, keep the top `--max`, then
    drop anything below the relevance floor (see below).
-4. Ask `PREFACE_MODEL` for one practitioner takeaway per paper, then for the
-   issue intro.
+4. Ask `PREFACE_MODEL` for one practitioner takeaway per paper, then a web
+   headline, then the issue intro.
 
 Every run writes the top 15 scores to `logs/mt_digest_<date>.log`, so the
 ranking can be audited after the fact. Each entry carries a raw cosine score
@@ -182,6 +182,25 @@ worse than admitting a marginal one on a rare flat batch.
 Override per run with `--min-z` and `--min-picks`, or change
 `MIN_RELEVANCE_Z` / `MIN_PICKS`. A large negative `--min-z` restores the old
 always-five behaviour.
+
+## The web headline
+
+`draft_title()` asks for a headline naming what the issue is actually about -
+the task, metric, language or benchmark - and stores it as `title` in the run
+log. "Machine Translation Digest for Sep 16 2026" is a filing label; nobody
+searches for it. The headline is what becomes the `<h1>` and `<title>` on the
+yukajii.com page.
+
+**The e-mail subject is deliberately left alone.** Both the Buttondown slug and
+`check_already_sent.py` key off it, so changing it would renumber the archive
+and break the reattempt guard.
+
+The title travels in the log rather than in the Markdown, which keeps
+`mt_digest_<date>.md` a clean e-mail body with no front matter for Buttondown
+to trip over. `_tidy_title()` strips wrapping quotes, a trailing period and a
+leading label ("MT Digest: ..."), and rejects anything over fourteen words or
+carrying a banned phrase. A rejected or failed title is simply empty, and the
+page falls back to a dated heading - the issue is never blocked on a nicety.
 
 ## Issue format
 
