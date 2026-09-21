@@ -26,3 +26,4 @@ urllib3==2.4.0
 sentence-transformers   # downloads the e5 model on first use
 torch                   # pulled automatically as a dep, listed for clarity
 numpy                   # cosine-similarity math
+tzdata                  # zoneinfo needs this on Windows; harmless on Linux

@@ -41,24 +41,30 @@ jobs:
       # 2. pick the DATE (bash only, no deps) so the guard can run cheaply
       - name: Determine DATE
         run: |
-          # Decide the target date:
-          #  - if workflow_dispatch + input set → use that
-          #  - otherwise → today - 5 days (see DEFAULT_DATE_LAG_DAYS in script)
+          # DATE is the arXiv ANNOUNCEMENT day whose batch we digest.
+          #  - workflow_dispatch + input set → use that
+          #  - otherwise → today - 5 days (see DEFAULT_DATE_LAG_DAYS)
+          #
+          # arXiv announces Sun-Thu only, so Friday and Saturday roll back to
+          # Thursday. Sunday is a real announcement day and is left alone.
+          # This MUST stay in step with resolve_target_date() in
+          # mt_arxiv_digest.py - the guard has to run before pip install, so
+          # the rule is deliberately duplicated here in bash.
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.date }}" ]]; then
             DATE="${{ github.event.inputs.date }}"
           else
             DATE="$(date -u -d '5 days ago' +%F)"
-            # Roll back to Friday if the target date lands on a weekend
-            DOW="$(date -u -d "$DATE" +%u)"   # 1=Mon … 6=Sat, 7=Sun
-            if [[ "$DOW" -eq 6 ]]; then
-              DATE="$(date -u -d "$DATE -1 day" +%F)"
-            elif [[ "$DOW" -eq 7 ]]; then
-              DATE="$(date -u -d "$DATE -2 days" +%F)"
-            fi
+          fi
+
+          DOW="$(date -u -d "$DATE" +%u)"     # 1=Mon .. 5=Fri, 6=Sat, 7=Sun
+          if [[ "$DOW" -eq 5 ]]; then
+            DATE="$(date -u -d "$DATE -1 day" +%F)"     # Fri -> Thu
+          elif [[ "$DOW" -eq 6 ]]; then
+            DATE="$(date -u -d "$DATE -2 days" +%F)"    # Sat -> Thu
           fi
 
           echo "DATE=$DATE" >> "$GITHUB_ENV"
-          echo "Digest date (resolved): $DATE"
+          echo "Announcement batch (resolved): $DATE ($(date -u -d "$DATE" +%A))"
 
       # 3. skip guard: if this digest already went out (e.g. an earlier
       #    reattempt today succeeded), skip the heavy steps below and avoid

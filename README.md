@@ -12,7 +12,7 @@ Published as **[Daily MT Picks](https://buttondown.com/daily-mt-picks/archive/)*
 
 | File / Dir                     | Purpose                                                                                                                                                                         |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mt_arxiv_digest.py`           | Fetches one day of `cs.CL` pre-prints, embeds them with [*e5-large-v2*](https://huggingface.co/intfloat/e5-large-v2), picks the top-*k* MT-related papers, calls the model in `PREFACE_MODEL` for a 2-3 sentence intro, and writes `mt_digest_YYYY-MM-DD.md` plus a JSON run log. |
+| `mt_arxiv_digest.py`           | Fetches one arXiv announcement batch of `cs.CL` pre-prints, embeds them with [*e5-large-v2*](https://huggingface.co/intfloat/e5-large-v2), picks the top-*k* MT-related papers, calls the model in `PREFACE_MODEL` for a 2-3 sentence intro, and writes `mt_digest_YYYY-MM-DD.md` plus a JSON run log. |
 | `send_digest.py`               | Posts the generated Markdown to Buttondown via its REST API. Idempotent: a repeat call for an already-queued date is a no-op.                                                    |
 | `check_already_sent.py`        | Guard step: inspects the workflow's own artifacts and reports whether this date's digest already went out, so a reattempt run can skip the heavy steps.                          |
 | `.github/workflows/digest.yml` | GitHub Actions workflow. Runs at 07:20 UTC with reattempts at 11:20 and 15:20 (or on demand): builds the digest, e-mails it, uploads the Markdown and log as private artifacts, and files an issue if the last reattempt fails. |
@@ -42,30 +42,68 @@ HuggingFace cache.
 ### Command-line flags
 
 ```text
-<date>              positional UTC date, YYYY-MM-DD
+<date>              positional announcement date, YYYY-MM-DD
 --date YYYY-MM-DD   same thing as a flag
 --max N             include at most N papers (default: 5)
---print-date        print the resolved target date and exit
+--print-date        print the resolved announcement date and exit
 ```
 
-With no date given, the script targets **today minus `DEFAULT_DATE_LAG_DAYS`**
-(currently 5), rolling back to Friday if that lands on a Saturday or Sunday.
-The lag exists because arXiv's `submittedDate` filter only settles once papers
-have been announced. The `DATE` environment variable is honoured as a fallback,
-which is how CI passes the date in.
+The date is an arXiv **announcement day**, not a submission day - see
+[Announcement batches](#announcement-batches) below. With no date given the
+script targets **today minus `DEFAULT_DATE_LAG_DAYS`** (currently 5), rolled
+back to the most recent announcement day. The lag exists because arXiv's
+`submittedDate` filter only settles once a batch has been announced. The
+`DATE` environment variable is honoured as a fallback, which is how CI passes
+the date in.
 
 `--print-date` resolves the date without loading the embedding model or the
 OpenAI client, so it returns instantly. It is a local convenience only: the
 workflow deliberately computes the same date in bash instead, because the
 already-sent guard has to run *before* `pip install`. That means the lag and
-the weekend rollback are implemented twice, in `resolve_target_date()` and in
+the announcement-day rollback are implemented twice, in `resolve_target_date()` and in
 the "Determine DATE" step. **Change one and you must change the other.**
 
 ---
 
+## Announcement batches
+
+arXiv announces five batches a week and **never on Friday or Saturday**
+([policy](https://info.arxiv.org/help/availability.html)). Each closes at
+14:00 ET and goes live at 20:00 ET the same day:
+
+| Submitted (ET) | Announced (ET) |
+| -------------- | -------------- |
+| Mon 14:00 - Tue 14:00 | Tue 20:00 |
+| Tue 14:00 - Wed 14:00 | Wed 20:00 |
+| Wed 14:00 - Thu 14:00 | Thu 20:00 |
+| Thu 14:00 - Fri 14:00 | Sun 20:00 |
+| **Fri 14:00 - Mon 14:00** | **Mon 20:00** |
+
+That last row is why this digest works in batches rather than calendar days.
+**Saturdays and Sundays carry real cs.CL submissions** - 38 to 56 a day in a
+three-week sample - they are just announced together with Friday afternoon and
+Monday morning. Treating "arXiv does not announce at the weekend" as "there
+are no weekend papers" silently dropped every one of them, about 100 cs.CL
+papers a week.
+
+`batch_window()` converts an announcement day into the UTC window it covers,
+going through the tz database so the 14:00 ET deadline stays correct across
+daylight saving. The windows tile the week with no gaps and no overlaps.
+
+The pool is also simply better. The Monday batch for 2026-09-14 holds 197
+papers against 100 for that Monday alone, and its top five score z = 4.29,
+3.26, 3.01, 2.97, 2.09 - every one a real MT paper. The same day under
+single-day selection bottomed out at z = 1.38, where the fifth pick was a coin
+flip against the sixth.
+
+One caveat: arXiv's range filter is inclusive at both ends and minute-granular,
+so batch edges are not perfectly clean. Measured over the week of 2026-09-14,
+the tiling accounts for 521 of 522 papers. The single straggler is submitted
+within a minute of a deadline.
+
 ## How papers are chosen
 
-1. Fetch every `cs.CL` paper whose `submittedDate` falls on the target day
+1. Fetch every `cs.CL` paper submitted inside the target announcement batch
    (capped at `MAX_RESULTS`; the script warns if the cap is hit).
 2. Embed title + abstract with e5-large-v2.
 3. Score each paper against the `CONCEPTS` list and keep the top `--max`.
@@ -132,7 +170,8 @@ idempotent on top of that.
 
 The job also:
 
-* rolls a weekend target date back to Friday rather than skipping it;
+* rolls Friday and Saturday back to Thursday, the last day arXiv announced on
+  (Sunday is a real announcement day and is left alone);
 * caches the e5 weights, which otherwise cost a ~1.3 GB download three times
   a day;
 * uploads `mt_digest_md-YYYY-MM-DD` and `mt_digest_log-YYYY-MM-DD` as

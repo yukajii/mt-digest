@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse, datetime as dt, json, os, pathlib, random, re, textwrap, warnings, time
 from typing import List, Dict, Tuple
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import arxiv
@@ -159,6 +160,83 @@ def clean_abstract(text: str) -> str:
     return t.strip()
 
 
+# -- ARXIV ANNOUNCEMENT SCHEDULE -----------------------------------------
+# https://info.arxiv.org/help/availability.html
+#
+# arXiv announces five batches a week, never on Friday or Saturday. Each
+# batch closes at 14:00 ET and goes live at 20:00 ET the same day:
+#
+#   submitted Mon 14:00 - Tue 14:00  ->  announced Tue 20:00
+#   submitted Tue 14:00 - Wed 14:00  ->  announced Wed 20:00
+#   submitted Wed 14:00 - Thu 14:00  ->  announced Thu 20:00
+#   submitted Thu 14:00 - Fri 14:00  ->  announced Sun 20:00
+#   submitted Fri 14:00 - Mon 14:00  ->  announced Mon 20:00   <- weekend
+#
+# The last row is why this module works in batches rather than calendar
+# days. Saturdays and Sundays carry real cs.CL submissions (38-56 a day in
+# a three-week sample); they are simply announced together with Friday
+# afternoon and Monday morning. Digesting one calendar day at a time, and
+# skipping the days arXiv does not *announce* on, silently dropped every
+# weekend submission - roughly 100 cs.CL papers a week.
+ARXIV_ET = ZoneInfo("America/New_York")
+ARXIV_DEADLINE_HOUR = 14          # 14:00 ET, the submission cut-off
+
+# announcement weekday -> (window start, window end) as day offsets from it.
+# Friday (4) and Saturday (5) are absent: arXiv announces nothing on those.
+_BATCH_SPAN = {
+    0: (-3, 0),    # Mon announces Fri 14:00 -> Mon 14:00
+    1: (-1, 0),    # Tue announces Mon 14:00 -> Tue 14:00
+    2: (-1, 0),    # Wed announces Tue 14:00 -> Wed 14:00
+    3: (-1, 0),    # Thu announces Wed 14:00 -> Thu 14:00
+    6: (-3, -2),   # Sun announces Thu 14:00 -> Fri 14:00
+}
+
+
+def is_announcement_day(day: dt.date) -> bool:
+    return day.weekday() in _BATCH_SPAN
+
+
+def previous_announcement_day(day: dt.date) -> dt.date:
+    """Roll back to the most recent day arXiv actually announced on."""
+    while not is_announcement_day(day):
+        day -= dt.timedelta(days=1)
+    return day
+
+
+def batch_window(announce_day: dt.date) -> Tuple[dt.datetime, dt.datetime]:
+    """UTC [start, end] of the submission window announced on `announce_day`.
+
+    Deadlines are wall-clock 14:00 ET, so the UTC offset shifts with US
+    daylight saving. Converting through the tz database keeps the window
+    correct across the March and November transitions.
+    """
+    if not is_announcement_day(announce_day):
+        raise ValueError(
+            f"{announce_day} ({announce_day:%A}) is not an arXiv announcement day"
+        )
+
+    start_off, end_off = _BATCH_SPAN[announce_day.weekday()]
+    deadline = dt.time(ARXIV_DEADLINE_HOUR, 0)
+
+    start_et = dt.datetime.combine(
+        announce_day + dt.timedelta(days=start_off), deadline, tzinfo=ARXIV_ET
+    )
+    end_et = dt.datetime.combine(
+        announce_day + dt.timedelta(days=end_off), deadline, tzinfo=ARXIV_ET
+    )
+    # The window is half-open in real time: (previous deadline, this one].
+    # arXiv's range filter is inclusive at both ends and minute-granular, so
+    # the start is nudged a minute forward rather than the end a minute back.
+    # Measured over the week of 2026-09-14: nudging the start loses 1 paper
+    # in 522 at the boundaries, nudging the end loses 6 -- submissions spike
+    # in the final minute before the deadline, so that minute must land
+    # inside a batch, not between two.
+    start_et += dt.timedelta(minutes=1)
+
+    return (start_et.astimezone(dt.timezone.utc),
+            end_et.astimezone(dt.timezone.utc))
+
+
 # -- HELPERS -------------------------------------------------------------
 # arXiv throttles anonymous automated traffic (esp. from shared cloud IPs
 # like GitHub Actions runners) and responds with HTTP 429. Identify the
@@ -172,9 +250,11 @@ ARXIV_BACKOFF_CAP = 300    # seconds; ceiling on any single wait
 ARXIV_BACKOFF_JITTER = 15  # seconds; random spread added to each wait
 
 
-def fetch_cscl(date: dt.date, max_retries: int = ARXIV_MAX_RETRIES) -> List[Dict]:
-    day = date.strftime("%Y%m%d")
-    q = f'cat:cs.CL AND submittedDate:[{day}0000 TO {day}2359]'
+def fetch_cscl(window: Tuple[dt.datetime, dt.datetime],
+               max_retries: int = ARXIV_MAX_RETRIES) -> List[Dict]:
+    start, end = window
+    q = ('cat:cs.CL AND submittedDate:'
+         f'[{start:%Y%m%d%H%M} TO {end:%Y%m%d%H%M}]')
     search = arxiv.Search(
         query=q,
         max_results=MAX_RESULTS,
@@ -203,7 +283,8 @@ def fetch_cscl(date: dt.date, max_retries: int = ARXIV_MAX_RETRIES) -> List[Dict
                     "url": p.entry_id.replace("http://", "https://", 1),
                 })
             if len(papers) >= MAX_RESULTS:
-                print(f"[warn] hit MAX_RESULTS ({MAX_RESULTS}) for {date} - "
+                print(f"[warn] hit MAX_RESULTS ({MAX_RESULTS}) for "
+                      f"{start:%Y-%m-%d %H:%M}Z..{end:%Y-%m-%d %H:%M}Z - "
                       "some papers were not considered for ranking")
             return papers
         except arxiv.HTTPError as e:
@@ -418,7 +499,8 @@ def draft_takeaways(papers: List[Dict], picks: List[int]):
 # -- OUTPUT --------------------------------------------------------------
 def write_md(date: dt.date, preface: str,
              papers: List[Dict], picks: List[int],
-             takeaways: List[str] | None = None):
+             takeaways: List[str] | None = None,
+             window: Tuple[dt.datetime, dt.datetime] | None = None):
 
     md: List[str] = [
         preface.strip(),
@@ -442,6 +524,26 @@ def write_md(date: dt.date, preface: str,
 
         md += [clean_abstract(p["abstract"]), ""]
 
+    # Say which submission window this covers. An issue keyed to a Monday
+    # announcement spans the previous Friday afternoon through Monday
+    # morning, and a reader should not have to guess that.
+    if window:
+        start, end = window
+        # %-d is a glibc extension and blows up on Windows, so build the
+        # day number by hand and keep the script runnable locally.
+        def _long(d: dt.date) -> str:
+            return f"{d.day} {d:%B %Y}"
+
+        span = (_long(start.date()) if start.date() == end.date()
+                else f"{start.day} {start:%B} to {_long(end.date())}")
+        md += [
+            "---",
+            "",
+            f"*Papers announced by arXiv on {date:%A}, {_long(date)}, "
+            f"covering submissions from {span}.*",
+            "",
+        ]
+
     path = BASE_DIR / f"mt_digest_{date.isoformat()}.md"
     path.write_text("\n".join(md), encoding="utf-8")
     return path
@@ -455,18 +557,29 @@ def write_log(date: dt.date, log: Dict):
 
 # -- MAIN ----------------------------------------------------------------
 def resolve_target_date(cli_pos, cli_flag, env_var):
+    """Resolve the arXiv *announcement* day this run should digest.
+
+    An explicit date is taken at face value and rolled back if it is not an
+    announcement day, so `mt_arxiv_digest.py 2026-09-19` (a Saturday) still
+    does something sensible rather than raising.
+    """
+    explicit = None
     if cli_pos:
-        return dt.datetime.strptime(cli_pos, "%Y-%m-%d").date()
-    if cli_flag:
-        return cli_flag
-    if env_var:
-        return dt.datetime.strptime(env_var, "%Y-%m-%d").date()
-    d = dt.date.today() - dt.timedelta(days=DEFAULT_DATE_LAG_DAYS)
-    if d.weekday() == 5:   # Saturday → Friday
-        d -= dt.timedelta(days=1)
-    elif d.weekday() == 6: # Sunday → Friday
-        d -= dt.timedelta(days=2)
-    return d
+        explicit = dt.datetime.strptime(cli_pos, "%Y-%m-%d").date()
+    elif cli_flag:
+        explicit = cli_flag
+    elif env_var:
+        explicit = dt.datetime.strptime(env_var, "%Y-%m-%d").date()
+
+    if explicit is not None:
+        return previous_announcement_day(explicit)
+
+    # The lag covers the gap between a batch closing and the API indexing it.
+    # Worst case is a Thursday close, announced Sunday 20:00 ET, so four days
+    # is the true minimum and five leaves a day of slack for holidays.
+    return previous_announcement_day(
+        dt.date.today() - dt.timedelta(days=DEFAULT_DATE_LAG_DAYS)
+    )
 
 
 def main():
@@ -477,8 +590,7 @@ def main():
     ap.add_argument("--max", dest="max_picks", type=int,
                     default=DEFAULT_MAX_PICKS)
     ap.add_argument("--print-date", action="store_true",
-                    help="Print the resolved target date and exit "
-                         "(single source of truth for CI).")
+                    help="Print the resolved announcement date and exit.")
 
     ns = ap.parse_args()
 
@@ -491,16 +603,20 @@ def main():
     if "OPENAI_API_KEY" not in os.environ:
         raise SystemExit("OPENAI_API_KEY env var missing")
 
-    papers = fetch_cscl(target_date)
+    window = batch_window(target_date)
+    print(f"[info] {target_date} ({target_date:%A}) announcement batch: "
+          f"{window[0]:%Y-%m-%d %H:%M}Z .. {window[1]:%Y-%m-%d %H:%M}Z")
+
+    papers = fetch_cscl(window)
     if not papers:
-        print(f"No cs.CL papers on {target_date} - nothing to send.")
+        print(f"No cs.CL papers in the {target_date} batch - nothing to send.")
         return
 
     picks, ranking = rank_mt_papers(papers, ns.max_picks)
 
     takeaways, takeaway_usage = draft_takeaways(papers, picks)
     preface, preface_prompt, preface_usage = draft_preface(target_date, papers, picks)
-    md_path = write_md(target_date, preface, papers, picks, takeaways)
+    md_path = write_md(target_date, preface, papers, picks, takeaways, window)
 
     total_in = (preface_usage.get("input_tokens", 0)
                 + takeaway_usage.get("input_tokens", 0))
