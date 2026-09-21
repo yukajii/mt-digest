@@ -2,17 +2,17 @@
 """
 send_digest.py <digest_markdown_file>
 
-*One‑shot* Buttondown sender for mt-digest:
-    – Creates the email with **status=about_to_send** so it is queued
+*One-shot* Buttondown sender for mt-digest:
+    - Creates the email with **status=about_to_send** so it is queued
       immediately for all active subscribers.
-    – No use of the /send‑draft endpoint ⇒ the [PREVIEW] copy disappears.
-    – Idempotent: repeated calls become no‑ops once the email is en route
+    - No use of the /send-draft endpoint => the [PREVIEW] copy disappears.
+    - Idempotent: repeated calls become no-ops once the email is en route
       or already sent.
 
 Environment variable required:
-    BUTTONDOWN_TOKEN – your personal API token.
+    BUTTONDOWN_TOKEN - your personal API token.
 
-Exit code is non‑zero only on *unexpected* failures so the CI job fails
+Exit code is non-zero only on *unexpected* failures so the CI job fails
 only when something really broke.
 """
 from __future__ import annotations
@@ -20,8 +20,8 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import sys
-import time
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -29,10 +29,12 @@ from typing import Any, Dict
 import requests
 
 BTN_API = "https://api.buttondown.email/v1"
-TIMEOUT  = 30  # seconds for all HTTP calls
+TIMEOUT = 30  # seconds for all HTTP calls
+
+DIGEST_NAME_RE = re.compile(r"^mt_digest_(\d{4}-\d{2}-\d{2})$")
 
 
-# ── helpers ─────────────────────────────────────────────────────────────
+# -- helpers -------------------------------------------------------------
 
 def bail(msg: str) -> None:
     print(f"\033[91m{msg}\033[0m", file=sys.stderr)
@@ -49,7 +51,7 @@ def request_json(method: str, url: str, **kwargs):
     return resp, data
 
 
-# ── 0⃣ CLI & env checks ────────────────────────────────────────────────
+# -- 0. CLI & env checks -------------------------------------------------
 if len(sys.argv) != 2:
     bail("Usage: python send_digest.py mt_digest_YYYY-MM-DD.md")
 
@@ -57,17 +59,22 @@ md_path = pathlib.Path(sys.argv[1]).resolve()
 if not md_path.exists():
     bail(f"File not found: {md_path}")
 
-TOKEN = os.getenv("BUTTONDOWN_TOKEN")
-if not TOKEN:
-    bail("Env var BUTTONDOWN_TOKEN is missing")
+name_match = DIGEST_NAME_RE.match(md_path.stem)
+if not name_match:
+    bail(f"Unexpected digest filename {md_path.name!r} - "
+         "expected mt_digest_YYYY-MM-DD.md")
 
-subject_date = md_path.stem[-10:]            # YYYY‑MM‑DD at file end
+subject_date = name_match.group(1)
 try:
     pretty_date = datetime.strptime(subject_date, "%Y-%m-%d").strftime("%b %d %Y")
 except ValueError:
-    pretty_date = subject_date               # (should never happen)
+    bail(f"{subject_date!r} is not a real calendar date")
 
 subject = f"Machine Translation Digest for {pretty_date}"
+
+TOKEN = os.getenv("BUTTONDOWN_TOKEN")
+if not TOKEN:
+    bail("Env var BUTTONDOWN_TOKEN is missing")
 
 HEADERS: Dict[str, str] = {
     "Authorization": f"Token {TOKEN}",
@@ -79,8 +86,8 @@ HEADERS: Dict[str, str] = {
     "X-Buttondown-Live-Dangerously": "true",
 }
 
-# ── 1⃣ Try to create‑and‑send in one go ────────────────────────────────
-print("⏳ Creating + queuing e‑mail…")
+# -- 1. Try to create-and-send in one go ---------------------------------
+print("Creating + queuing e-mail...")
 
 payload: Dict[str, Any] = {
     "subject": subject,
@@ -97,14 +104,14 @@ create_resp, create_data = request_json(
 
 if create_resp.ok:
     email_id = create_data["id"]
-    print("✓ Email queued – id:", email_id)
+    print("[ok] Email queued - id:", email_id)
     sys.exit(0)
 
 if create_data.get("code") != "email_duplicate":
-    bail(f"Email creation failed → {create_resp.status_code}: {create_data}")
+    bail(f"Email creation failed -> {create_resp.status_code}: {create_data}")
 
-# ── 2⃣ Duplicate: fetch existing record and ensure it is sending ───────
-print("ℹ️  Duplicate detected – retrieving existing email…")
+# -- 2. Duplicate: fetch existing record and ensure it is sending --------
+print("[info] Duplicate detected - retrieving existing email...")
 q = urllib.parse.quote_plus(subject)
 list_resp, list_data = request_json(
     "GET", f"{BTN_API}/emails?search={q}", headers=HEADERS
@@ -114,31 +121,31 @@ list_resp.raise_for_status()
 try:
     email = next(e for e in list_data["results"] if e["subject"] == subject)
 except (KeyError, StopIteration):
-    bail("Duplicate reported but email not found – aborting")
+    bail("Duplicate reported but email not found - aborting")
 
 email_id = email["id"]
-state    = email.get("status")
-print(f"✓ Found email {email_id} with status {state}")
+state = email.get("status")
+print(f"[ok] Found email {email_id} with status {state}")
 
 if state in {"about_to_send", "in_flight", "sent"}:
-    print("✅ Already on its way – nothing to do")
+    print("[ok] Already on its way - nothing to do")
     sys.exit(0)
 
-# state is still draft ⇒ patch it
-print("⏳ Finalising draft → about_to_send…")
+# state is still draft => patch it
+print("Finalising draft -> about_to_send...")
 patch_resp, patch_data = request_json(
     "PATCH", f"{BTN_API}/emails/{email_id}", headers=HEADERS,
     data=json.dumps({"status": "about_to_send"})
 )
 
 if patch_resp.ok:
-    ts = datetime.now(timezone.utc).strftime("%Y‑%m‑%d %H:%M:%S UTC")
-    print("✅ Sent at", ts)
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    print("[ok] Sent at", ts)
     sys.exit(0)
 
-# last‑ditch: benign duplicates / races
+# last-ditch: benign duplicates / races
 if patch_data.get("code") in {"email_invalid_status", "email_already_sent", "email_already_sending"}:
-    print("✅ Already sending – all good")
+    print("[ok] Already sending - all good")
     sys.exit(0)
 
-bail(f"Send failed → {patch_resp.status_code}: {patch_data}")
+bail(f"Send failed -> {patch_resp.status_code}: {patch_data}")
