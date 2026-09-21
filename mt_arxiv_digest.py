@@ -88,6 +88,77 @@ def openai_client():
     return _OPENAI
 
 
+# -- ABSTRACT CLEAN-UP ---------------------------------------------------
+# arXiv abstracts are LaTeX source, so roughly one in six carries markup that
+# renders as literal noise in an e-mail: "${<}100$", "8$\times$ more",
+# "\href{...}{github}". These turn it back into prose.
+_MATH_SYMBOLS = {
+    r"\times": "x", r"\sim": "~", r"\approx": "~", r"\pm": "+/-",
+    r"\leq": "<=", r"\le": "<=", r"\geq": ">=", r"\ge": ">=",
+    r"\neq": "!=", r"\ll": "<<", r"\gg": ">>",
+    r"\rightarrow": "->", r"\to": "->", r"\leftarrow": "<-",
+    r"\cdot": ".", r"\ldots": "...", r"\dots": "...", r"\infty": "inf",
+    r"\alpha": "alpha", r"\beta": "beta", r"\gamma": "gamma",
+    r"\delta": "delta", r"\Delta": "Delta", r"\epsilon": "epsilon",
+    r"\lambda": "lambda", r"\mu": "mu", r"\sigma": "sigma", r"\theta": "theta",
+}
+
+_TEXT_CMD = re.compile(
+    r"\\(?:textbf|textit|textsf|textsc|texttt|textrm|textnormal"
+    r"|emph|text|mathrm|mathbf|mathit|mathsf|mathcal|mbox|underline)\s*\{([^{}]*)\}"
+)
+_FONT_GROUP = re.compile(r"\{\\(?:sf|bf|it|tt|rm|em|sc)\s+([^{}]*)\}")
+_BIBTEX_BRACES = re.compile(r"\{([^{}\\]*)\}")
+
+
+def _unwrap(pattern: re.Pattern, text: str, passes: int = 6) -> str:
+    """Apply an innermost-brace pattern until it stops matching.
+
+    Formatting commands nest -- \\textbf{\\textsf{PACE}} is real arXiv input --
+    and a single pass leaves the outer command stranded.
+    """
+    for _ in range(passes):
+        new = pattern.sub(r"\1", text)
+        if new == text:
+            break
+        text = new
+    return text
+
+
+def _demath(expr: str) -> str:
+    """Render the inside of an inline-math span as plain text."""
+    for cmd, sym in _MATH_SYMBOLS.items():
+        expr = expr.replace(cmd, sym)
+    expr = _unwrap(_TEXT_CMD, expr)
+    expr = expr.replace("{,}", ",").replace(r"\,", "").replace(r"\;", " ")
+    expr = expr.replace("{", "").replace("}", "")
+    expr = re.sub(r"\\([a-zA-Z]+)", r"\1", expr)   # unknown command: keep the name
+    return expr.strip()
+
+
+def clean_abstract(text: str) -> str:
+    """Strip LaTeX markup that would otherwise render literally in the e-mail."""
+    t = text
+    t = re.sub(r"\\href\s*\{([^{}]*)\}\s*\{([^{}]*)\}", r"[\2](\1)", t)
+    t = re.sub(r"\\(?:url|nolinkurl)\s*\{([^{}]*)\}", r"\1", t)
+    t = re.sub(r"~?\\cite[a-zA-Z]*\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}", "", t)
+    t = re.sub(r"\\(?:footnote|label|ref|eqref)\s*\{[^{}]*\}", "", t)
+
+    # Inline and display math.
+    t = re.sub(r"\$\$(.+?)\$\$", lambda m: _demath(m.group(1)), t, flags=re.S)
+    t = re.sub(r"\$([^$]*)\$", lambda m: _demath(m.group(1)), t)
+
+    t = _unwrap(_TEXT_CMD, t)
+    t = _unwrap(_FONT_GROUP, t)
+    t = _unwrap(_BIBTEX_BRACES, t)                 # BibTeX capitalisation braces
+    t = t.replace("``", '"').replace("''", '"')
+    t = re.sub(r"\\([%&_#${}])", r"\1", t)         # escaped specials
+    t = t.replace("\\ ", " ")                      # escaped space, as in "vs.\ "
+    t = re.sub(r"\\[a-zA-Z]+\s*", " ", t)          # any command left over
+    t = re.sub(r"\s+", " ", t)
+    return t.strip()
+
+
 # -- HELPERS -------------------------------------------------------------
 # arXiv throttles anonymous automated traffic (esp. from shared cloud IPs
 # like GitHub Actions runners) and responds with HTTP 429. Identify the
@@ -128,7 +199,8 @@ def fetch_cscl(date: dt.date, max_retries: int = ARXIV_MAX_RETRIES) -> List[Dict
                     "id": p.get_short_id(),
                     "title": p.title.strip().replace("\n", " "),
                     "abstract": re.sub(r"\s+", " ", p.summary.strip()),
-                    "url": p.entry_id,          # abs page, not the raw PDF
+                    # abs page, not the raw PDF; entry_id comes back as http
+                    "url": p.entry_id.replace("http://", "https://", 1),
                 })
             if len(papers) >= MAX_RESULTS:
                 print(f"[warn] hit MAX_RESULTS ({MAX_RESULTS}) for {date} - "
@@ -206,37 +278,147 @@ def openai_chat(model: str, system: str, user: str):
     return text.strip(), usage
 
 
-# -- PREFACE -------------------------------------------------------------
+# -- EDITORIAL -----------------------------------------------------------
+EDITOR_SYSTEM = (
+    "You edit Daily MT Picks, a digest read by localisation engineers, MT "
+    "researchers and translation-industry practitioners. They know the field: "
+    "do not explain what BLEU or post-editing is. Write plainly, in the register "
+    "of a knowledgeable colleague, never marketing copy."
+)
+
+# Every issue in the archive opens "Today's MT digest highlights/spotlights...".
+# Rotating the opening move by date breaks that groove without needing state.
+PREFACE_ANGLES = [
+    "Open by naming the single most consequential or surprising finding in the set.",
+    "Open with the question these papers are collectively circling.",
+    "Open by characterising what kind of day this was for MT on arXiv - dense, thin, evaluation-heavy, dominated by one language family, whatever actually fits.",
+    "Open with one concrete result, number or benchmark drawn from a specific paper.",
+    "Open with what is at stake here for someone actually shipping translation systems.",
+    "Open by naming a tension or disagreement between two of the papers.",
+    "Open with the shift in what researchers appear to be measuring or optimising for.",
+]
+
+BANNED_OPENERS = ("today", "this digest", "in today", "this week", "welcome")
+
+
 def draft_preface(date: dt.date, papers: List[Dict], picks: List[int]):
     chosen = [papers[i - 1] for i in picks] if picks else []
-    titles_block = "\n".join(f"- {p['title']}" for p in chosen) or "(no MT-specific papers today)"
+    block = "\n\n".join(
+        f"- {p['title']}\n  {clean_abstract(p['abstract'])[:600]}" for p in chosen
+    ) or "(no MT-specific papers today)"
+
+    angle = PREFACE_ANGLES[date.toordinal() % len(PREFACE_ANGLES)]
 
     user_msg = textwrap.dedent(f"""
-        You are writing the short introduction for a daily Machine Translation (MT) research digest.
-        Today is {date.isoformat()}.
+        Write the introduction for the {date.isoformat()} issue. Two or three
+        sentences, no heading, no list, no sign-off.
 
-        Please produce exactly 2-3 sentences:
-        - Sentence 1 - intro
-        - Sentence 2-3 - common themes
+        {angle}
 
-        Do not apologise or list papers again.
+        Hard constraints:
+        - Do not begin with "Today", "This digest", "In today's", or any variant.
+          Vary the sentence shape from issue to issue.
+        - Do not use the words "spotlights", "highlights", "showcases", "delves",
+          "landscape" or "a common thread".
+        - Name specifics. Prefer the actual language pair, metric, benchmark or
+          number over abstractions like "advances in evaluation".
+        - Do not claim the papers are about machine translation if they are not.
+          If the day's selection is mostly adjacent NLP work, say so plainly -
+          a thin day is worth reporting as a thin day.
+        - Do not re-list the paper titles.
 
-        Selected papers:
-        {titles_block}
+        Papers in this issue:
+        {block}
     """).strip()
 
-    reply, usage = openai_chat(
-        PREFACE_MODEL,
-        "You are a helpful research newsletter editor.",
-        user_msg,
-    )
+    reply, usage = openai_chat(PREFACE_MODEL, EDITOR_SYSTEM, user_msg)
+
+    if reply.lower().lstrip("*_# ").startswith(BANNED_OPENERS):
+        print(f"[warn] preface still opens with a banned phrase: {reply[:60]!r}")
 
     return reply, user_msg, usage
 
 
+def _extract_json(text: str):
+    """Parse a JSON object out of a model reply, tolerating code fences."""
+    stripped = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
+    candidates = [stripped]
+
+    outermost = re.search(r"\{.*\}", stripped, re.S)
+    if outermost:
+        candidates.append(outermost.group(0))
+
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def draft_takeaways(papers: List[Dict], picks: List[int]):
+    """One practitioner-facing line per paper.
+
+    Returns (list aligned to picks with None where it failed, usage dict).
+    A failure here must not block the issue, so every error path degrades to
+    "no takeaway" rather than raising.
+    """
+    chosen = [papers[i - 1] for i in picks]
+    listing = "\n\n".join(
+        f"[{n}] {p['title']}\n{clean_abstract(p['abstract'])[:1400]}"
+        for n, p in enumerate(chosen, 1)
+    )
+
+    user_msg = textwrap.dedent(f"""
+        For each paper below, write one sentence saying what a working
+        translation or localisation practitioner should take from it.
+
+        Rules:
+        - At most 28 words per sentence. One sentence, no trailing period lists.
+        - Concrete: name the method, the number, or the limitation that matters.
+        - No hype, no "this paper shows", no restating the title.
+        - If a paper is not really about translation, say what it is about and
+          why an MT practitioner might still care - or say plainly that it is
+          adjacent work.
+
+        Return only JSON of this exact shape:
+        {{"takeaways": [{{"n": 1, "text": "..."}}, {{"n": 2, "text": "..."}}]}}
+
+        Papers:
+        {listing}
+    """).strip()
+
+    empty = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    try:
+        reply, usage = openai_chat(PREFACE_MODEL, EDITOR_SYSTEM, user_msg)
+    except Exception as e:                      # noqa: BLE001 - never block the send
+        print(f"[warn] takeaway call failed, shipping without them: {e}")
+        return [None] * len(chosen), empty
+
+    parsed = _extract_json(reply)
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("takeaways"), list):
+        print(f"[warn] could not parse takeaways, shipping without them: {reply[:120]!r}")
+        return [None] * len(chosen), usage
+
+    by_n = {}
+    for item in parsed["takeaways"]:
+        if isinstance(item, dict) and isinstance(item.get("text"), str):
+            try:
+                by_n[int(item["n"])] = item["text"].strip()
+            except (TypeError, ValueError):
+                continue
+
+    out = [by_n.get(n) for n in range(1, len(chosen) + 1)]
+    missing = [n for n, t in enumerate(out, 1) if not t]
+    if missing:
+        print(f"[warn] no takeaway returned for paper(s) {missing}")
+    return out, usage
+
+
 # -- OUTPUT --------------------------------------------------------------
 def write_md(date: dt.date, preface: str,
-             papers: List[Dict], picks: List[int]):
+             papers: List[Dict], picks: List[int],
+             takeaways: List[str] | None = None):
 
     md: List[str] = [
         preface.strip(),
@@ -245,19 +427,20 @@ def write_md(date: dt.date, preface: str,
         "",
     ]
 
-    first = True
-    for idx in picks:
-        if not first:
+    for n, idx in enumerate(picks):
+        if n:
             md += ["---", ""]
-        first = False
 
         p = papers[idx - 1]
-        md += [
-            f"## [{p['title']}]({p['url']})",
-            "",
-            p["abstract"],
-            "",
-        ]
+        md += [f"## [{p['title']}]({p['url']})", ""]
+
+        # The takeaway carries no label: five identical "Why it matters:"
+        # headers per issue, every day, is its own kind of repetition.
+        takeaway = takeaways[n] if takeaways else None
+        if takeaway:
+            md += [f"**{takeaway}**", ""]
+
+        md += [clean_abstract(p["abstract"]), ""]
 
     path = BASE_DIR / f"mt_digest_{date.isoformat()}.md"
     path.write_text("\n".join(md), encoding="utf-8")
@@ -315,13 +498,16 @@ def main():
 
     picks, ranking = rank_mt_papers(papers, ns.max_picks)
 
+    takeaways, takeaway_usage = draft_takeaways(papers, picks)
     preface, preface_prompt, preface_usage = draft_preface(target_date, papers, picks)
-    md_path = write_md(target_date, preface, papers, picks)
+    md_path = write_md(target_date, preface, papers, picks, takeaways)
 
-    approx_cost = (
-        preface_usage.get("input_tokens", 0) / 1_000_000 * USD_PER_MTOK_IN
-        + preface_usage.get("output_tokens", 0) / 1_000_000 * USD_PER_MTOK_OUT
-    )
+    total_in = (preface_usage.get("input_tokens", 0)
+                + takeaway_usage.get("input_tokens", 0))
+    total_out = (preface_usage.get("output_tokens", 0)
+                 + takeaway_usage.get("output_tokens", 0))
+    approx_cost = (total_in / 1_000_000 * USD_PER_MTOK_IN
+                   + total_out / 1_000_000 * USD_PER_MTOK_OUT)
 
     log_dict = {
         "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -331,9 +517,12 @@ def main():
         "picked_scores": [r["score"] for r in ranking if r["picked"]],
         "picked_z": [r["z"] for r in ranking if r["picked"]],
         "ranking_top_15": ranking[:15],
+        "takeaways": takeaways,
         "token_usage": {
             "preface_call": preface_usage,
-            "grand_total": preface_usage.get("total_tokens", 0),
+            "takeaway_call": takeaway_usage,
+            "grand_total": (preface_usage.get("total_tokens", 0)
+                            + takeaway_usage.get("total_tokens", 0)),
             "approx_cost_usd": round(approx_cost, 6),
         },
         "preface_prompt_sent": preface_prompt,

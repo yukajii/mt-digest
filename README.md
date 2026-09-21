@@ -64,10 +64,32 @@ the date rather than duplicating the arithmetic in YAML.
    (capped at `MAX_RESULTS`; the script warns if the cap is hit).
 2. Embed title + abstract with e5-large-v2.
 3. Score each paper against the `CONCEPTS` list and keep the top `--max`.
-4. Ask `PREFACE_MODEL` for a short intro over the selected titles.
+4. Ask `PREFACE_MODEL` for one practitioner takeaway per paper, then for the
+   issue intro.
 
 Every run writes the top 15 scores to `logs/mt_digest_<date>.log`, so the
-ranking can be audited after the fact.
+ranking can be audited after the fact. Each entry carries a raw cosine score
+and a `z` — its distance from that day's mean in standard deviations.
+
+**Use `z`, not the raw score, for any relevance threshold.** e5 cosines sit in
+a narrow 0.72-0.83 band regardless of how good the day was, so the absolute
+number says almost nothing. The within-day z-score does: measured over four
+archive days, the top paper scored z=+3.91 and z=+3.50 on days with real MT
+work, versus z=+2.13 on a day with none.
+
+## Issue format
+
+Each paper gets its abstract plus a one-line takeaway aimed at practitioners
+rather than reviewers. Abstracts are passed through `clean_abstract()` first,
+which turns LaTeX source back into prose - roughly one arXiv abstract in seven
+carries markup such as `${<}100$` or `\href{...}{github}` that would otherwise
+render literally in the e-mail.
+
+The intro rotates through `PREFACE_ANGLES` by date, and the prompt bans the
+openers and stock verbs the archive had settled into ("Today's MT digest
+spotlights...", "a common thread"). Both the takeaway call and the preface
+call are allowed to fail: a parse error or an API outage costs you the extra
+copy, not the issue.
 
 ---
 
