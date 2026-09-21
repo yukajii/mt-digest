@@ -13,8 +13,9 @@ Published as **[Daily MT Picks](https://buttondown.com/daily-mt-picks/archive/)*
 | File / Dir                     | Purpose                                                                                                                                                                         |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mt_arxiv_digest.py`           | Fetches one day of `cs.CL` pre-prints, embeds them with [*e5-large-v2*](https://huggingface.co/intfloat/e5-large-v2), picks the top-*k* MT-related papers, calls the model in `PREFACE_MODEL` for a 2-3 sentence intro, and writes `mt_digest_YYYY-MM-DD.md` plus a JSON run log. |
-| `send_digest.py`               | Posts the generated Markdown to Buttondown via its REST API.                                                                                                                    |
-| `.github/workflows/digest.yml` | GitHub Actions workflow that runs daily at 07:20 UTC (or on demand): builds the digest, e-mails it, uploads the Markdown and log as private artifacts, and files an issue if the scheduled run fails. |
+| `send_digest.py`               | Posts the generated Markdown to Buttondown via its REST API. Idempotent: a repeat call for an already-queued date is a no-op.                                                    |
+| `check_already_sent.py`        | Guard step: inspects the workflow's own artifacts and reports whether this date's digest already went out, so a reattempt run can skip the heavy steps.                          |
+| `.github/workflows/digest.yml` | GitHub Actions workflow. Runs at 07:20 UTC with reattempts at 11:20 and 15:20 (or on demand): builds the digest, e-mails it, uploads the Markdown and log as private artifacts, and files an issue if the last reattempt fails. |
 | `logs/`                        | JSON run logs, including per-paper relevance scores. Git-ignored; kept 30 days as CI artifacts.                                                                                 |
 
 ---
@@ -48,13 +49,17 @@ HuggingFace cache.
 ```
 
 With no date given, the script targets **today minus `DEFAULT_DATE_LAG_DAYS`**
-(currently 5). The lag exists because arXiv's `submittedDate` filter only
-settles once papers have been announced. The `DATE` environment variable is
-honoured as a fallback, which is how CI passes the date in.
+(currently 5), rolling back to Friday if that lands on a Saturday or Sunday.
+The lag exists because arXiv's `submittedDate` filter only settles once papers
+have been announced. The `DATE` environment variable is honoured as a fallback,
+which is how CI passes the date in.
 
-`--print-date` is deliberately cheap: it resolves the date without loading the
-embedding model or the OpenAI client, so the workflow can ask the script for
-the date rather than duplicating the arithmetic in YAML.
+`--print-date` resolves the date without loading the embedding model or the
+OpenAI client, so it returns instantly. It is a local convenience only: the
+workflow deliberately computes the same date in bash instead, because the
+already-sent guard has to run *before* `pip install`. That means the lag and
+the weekend rollback are implemented twice, in `resolve_target_date()` and in
+the "Determine DATE" step. **Change one and you must change the other.**
 
 ---
 
@@ -118,15 +123,24 @@ Two encrypted repository secrets are required:
 | `OPENAI_API_KEY`   | OpenAI key with access to `PREFACE_MODEL`. |
 | `BUTTONDOWN_TOKEN` | The Buttondown API token from above.    |
 
-The scheduled job:
+The job runs on three crons - 07:20, 11:20 and 15:20 UTC - which all resolve
+to the *same* target date. The later two are reattempts for when arXiv throttles
+the runner's shared IP with an HTTP 429. They are cheap no-ops on a good day:
+`check_already_sent.py` inspects the run's artifacts and short-circuits every
+heavy step once that date's digest has gone out, and the Buttondown send is
+idempotent on top of that.
 
-* skips Saturday and Sunday target dates, which arXiv never announces
-  (override with the `force` input on a manual dispatch);
-* skips the send cleanly if the day returned no papers at all;
+The job also:
+
+* rolls a weekend target date back to Friday rather than skipping it;
+* caches the e5 weights, which otherwise cost a ~1.3 GB download three times
+  a day;
 * uploads `mt_digest_md-YYYY-MM-DD` and `mt_digest_log-YYYY-MM-DD` as
   30-day private artifacts;
-* opens (or comments on) a `digest-failure` issue if a **scheduled** run fails,
-  so a silent break is visible.
+* opens (or comments on) a `digest-failure` issue **only when the 15:20
+  reattempt fails**. An earlier failure is what the reattempts exist for, so
+  reporting it then would be noise; if the last one has also failed, that
+  date's digest is genuinely stranded.
 
 No files are pushed back to the repo - digests live in Buttondown and as
 ephemeral artifacts.
