@@ -1,0 +1,6 @@
+# Keep these diffable as text so an encoding regression is visible in review
+# rather than showing up as "Bin N -> M bytes".
+requirements.txt text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
