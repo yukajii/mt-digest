@@ -51,6 +51,36 @@ def request_json(method: str, url: str, **kwargs):
     return resp, data
 
 
+def write_receipt(date: str, email: Dict[str, Any]) -> None:
+    """Record what Buttondown actually created, for the site sync.
+
+    The slug cannot be derived from the subject. Buttondown appends a random
+    suffix when a subject repeats, which has happened six times in the archive
+    (machine-translation-digest-for-jul-24-2026-9525 and friends). The sync
+    step needs the real one to name the content file and to link back, so
+    whatever the API returns is what gets written down.
+
+    Never fatal: a missing receipt costs the site sync, not the send.
+    """
+    try:
+        logs = pathlib.Path(__file__).parent / "logs"
+        logs.mkdir(exist_ok=True)
+        (logs / f"sent_{date}.json").write_text(json.dumps({
+            "target_date": date,
+            "id": email.get("id"),
+            "slug": email.get("slug"),
+            "subject": email.get("subject"),
+            "absolute_url": email.get("absolute_url"),
+            "publish_date": email.get("publish_date"),
+            "status": email.get("status"),
+            "recorded_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"[ok] receipt written for slug {email.get('slug')!r}")
+    except Exception as e:                       # noqa: BLE001
+        print(f"[warn] could not write receipt ({e}); site sync will skip this issue",
+              file=sys.stderr)
+
+
 # -- 0. CLI & env checks -------------------------------------------------
 if len(sys.argv) != 2:
     bail("Usage: python send_digest.py mt_digest_YYYY-MM-DD.md")
@@ -105,6 +135,7 @@ create_resp, create_data = request_json(
 if create_resp.ok:
     email_id = create_data["id"]
     print("[ok] Email queued - id:", email_id)
+    write_receipt(subject_date, create_data)
     sys.exit(0)
 
 if create_data.get("code") != "email_duplicate":
@@ -129,6 +160,7 @@ print(f"[ok] Found email {email_id} with status {state}")
 
 if state in {"about_to_send", "in_flight", "sent"}:
     print("[ok] Already on its way - nothing to do")
+    write_receipt(subject_date, email)
     sys.exit(0)
 
 # state is still draft => patch it
@@ -141,6 +173,7 @@ patch_resp, patch_data = request_json(
 if patch_resp.ok:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print("[ok] Sent at", ts)
+    write_receipt(subject_date, patch_data if patch_data.get("id") else email)
     sys.exit(0)
 
 # last-ditch: benign duplicates / races
