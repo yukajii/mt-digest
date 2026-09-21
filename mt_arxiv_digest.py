@@ -26,6 +26,12 @@ USD_PER_MTOK_OUT  = 5.00
 
 DEFAULT_DATE_LAG_DAYS = 5
 
+# Relevance floor, in standard deviations above the batch's own mean score.
+# Anything below this is dropped even if it would otherwise make the top 5,
+# so a thin batch yields a short issue instead of three padded slots. See
+# "Relevance floor" in the README for the measurements behind the value.
+MIN_RELEVANCE_Z = 2.0
+
 EMBED_MODEL_NAME = "intfloat/e5-large-v2"
 CONCEPTS = [
     "machine translation", "translation",
@@ -301,11 +307,14 @@ def fetch_cscl(window: Tuple[dt.datetime, dt.datetime],
             attempt += 1
 
 
-def rank_mt_papers(papers: List[Dict], max_picks: int) -> Tuple[List[int], List[Dict]]:
+def rank_mt_papers(papers: List[Dict], max_picks: int,
+                   min_z: float = MIN_RELEVANCE_Z) -> Tuple[List[int], List[Dict]]:
     """Return (1-based picked indices, per-paper ranking detail).
 
     Cosine similarity against the blended concept vector, e5 prefixes on
-    both sides. The detail is what feeds the relevance-threshold work.
+    both sides, then two cuts: keep at most `max_picks`, and drop anything
+    below `min_z`. The floor is what makes issue length follow the day
+    instead of always padding to five.
     """
     cvec = concept_vector()                                     # (dim,)
     texts = [f"passage: {p['title']} {p['abstract']}" for p in papers]
@@ -320,6 +329,10 @@ def rank_mt_papers(papers: List[Dict], max_picks: int) -> Tuple[List[int], List[
     order = np.argsort(-scores, kind="stable")
 
     mean, std = float(scores.mean()), float(scores.std())
+
+    def zscore(i) -> float:
+        return round((float(scores[i]) - mean) / std, 3) if std else 0.0
+
     detail = [
         {
             "rank": rank,
@@ -327,15 +340,21 @@ def rank_mt_papers(papers: List[Dict], max_picks: int) -> Tuple[List[int], List[
             "arxiv_id": papers[i]["id"],
             "title": papers[i]["title"],
             "score": round(float(scores[i]), 4),
-            # z-score against the same day's papers: raw e5 cosines sit in a
-            # very narrow band, so the relative figure is the usable signal.
-            "z": round((float(scores[i]) - mean) / std, 3) if std else 0.0,
-            "picked": rank <= max_picks,
+            # z-score against the same batch: raw e5 cosines sit in a very
+            # narrow band (0.72-0.83) whatever the day held, so only the
+            # relative figure carries usable signal.
+            "z": zscore(i),
+            "picked": rank <= max_picks and zscore(i) >= min_z,
         }
         for rank, i in enumerate(order, start=1)
     ]
 
-    picks = [int(i) + 1 for i in order[:max_picks]]
+    picks = [int(i) + 1 for i in order[:max_picks] if zscore(i) >= min_z]
+
+    dropped = max_picks - len(picks)
+    if dropped > 0:
+        print(f"[info] relevance floor z>={min_z} kept {len(picks)} of "
+              f"{max_picks} candidate slots")
     return picks, detail
 
 
@@ -611,6 +630,11 @@ def main():
                     type=lambda s: dt.datetime.strptime(s, "%Y-%m-%d").date())
     ap.add_argument("--max", dest="max_picks", type=int,
                     default=DEFAULT_MAX_PICKS)
+    ap.add_argument("--min-z", dest="min_z", type=float,
+                    default=MIN_RELEVANCE_Z,
+                    help="Relevance floor in standard deviations above the "
+                         f"batch mean (default: {MIN_RELEVANCE_Z}). "
+                         "Pass a large negative number to disable.")
     ap.add_argument("--print-date", action="store_true",
                     help="Print the resolved announcement date and exit.")
 
@@ -634,7 +658,21 @@ def main():
         print(f"No cs.CL papers in the {target_date} batch - nothing to send.")
         return
 
-    picks, ranking = rank_mt_papers(papers, ns.max_picks)
+    picks, ranking = rank_mt_papers(papers, ns.max_picks, ns.min_z)
+    if not picks:
+        top = ranking[0]
+        print(f"[info] nothing in the {target_date} batch cleared z>="
+              f"{ns.min_z} (best was {top['z']:+.2f}, {top['title'][:60]!r}) "
+              "- no issue written.")
+        write_log(target_date, {
+            "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+            "target_date": target_date.isoformat(),
+            "total_papers": len(papers),
+            "skipped": "no paper cleared the relevance floor",
+            "min_relevance_z": ns.min_z,
+            "ranking_top_15": ranking[:15],
+        })
+        return
 
     takeaways, takeaway_usage = draft_takeaways(papers, picks)
     preface, preface_prompt, preface_usage = draft_preface(target_date, papers, picks)
@@ -654,6 +692,8 @@ def main():
         "picked_indices": picks,
         "picked_scores": [r["score"] for r in ranking if r["picked"]],
         "picked_z": [r["z"] for r in ranking if r["picked"]],
+        "min_relevance_z": ns.min_z,
+        "n_picked": len(picks),
         "ranking_top_15": ranking[:15],
         "takeaways": takeaways,
         "token_usage": {

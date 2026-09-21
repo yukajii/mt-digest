@@ -112,17 +112,28 @@ jobs:
           restore-keys: ${{ runner.os }}-hf-
 
       # 6. build ---------------------------------------------------------
+      #    The relevance floor can legitimately reject an entire batch, in
+      #    which case no .md is written. That is a quiet day, not a failure,
+      #    so record it as an output and let the later steps stand down.
       - name: Build digest
+        id: build
         if: success() && steps.guard.outputs.already_sent != 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: python mt_arxiv_digest.py "$DATE"
+        run: |
+          python mt_arxiv_digest.py "$DATE"
+          if [[ -f "mt_digest_${DATE}.md" ]]; then
+            echo "built=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "built=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No paper in the $DATE batch cleared the relevance floor - nothing to send."
+          fi
 
       # 6b. dry run stops here, after printing what it would have sent.
       #     BUTTONDOWN_TOKEN is never put in this job's environment on a dry
       #     run, so the send cannot happen even by accident.
       - name: Show generated issue (dry run only)
-        if: github.event.inputs.dry_run == 'true'
+        if: github.event.inputs.dry_run == 'true' && steps.build.outputs.built == 'true'
         run: |
           echo "::notice::DRY RUN - nothing was sent to Buttondown."
           echo "===== mt_digest_${DATE}.md ====="
@@ -133,7 +144,7 @@ jobs:
 
       # 6c. send ---------------------------------------------------------
       - name: Send digest
-        if: success() && steps.guard.outputs.already_sent != 'true' && github.event.inputs.dry_run != 'true'
+        if: success() && steps.build.outputs.built == 'true' && github.event.inputs.dry_run != 'true'
         env:
           BUTTONDOWN_TOKEN: ${{ secrets.BUTTONDOWN_TOKEN }}
         run: python send_digest.py "mt_digest_${DATE}.md"
@@ -143,7 +154,7 @@ jobs:
       # check_already_sent.py looks for, so a dry run must never publish it
       # under that name - doing so would make a later real run skip the date.
       - name: Upload Markdown digest
-        if: success() && steps.guard.outputs.already_sent != 'true'
+        if: success() && steps.build.outputs.built == 'true'
         uses: actions/upload-artifact@v6
         with:
           name: mt_digest${{ github.event.inputs.dry_run == 'true' && '_DRYRUN' || '' }}_md-${{ env.DATE }}
@@ -151,7 +162,7 @@ jobs:
           retention-days: ${{ github.event.inputs.dry_run == 'true' && 7 || 30 }}
 
       - name: Upload JSON log
-        if: success() && steps.guard.outputs.already_sent != 'true'
+        if: success() && steps.guard.outputs.already_sent != 'true' && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v6
         with:
           name: mt_digest${{ github.event.inputs.dry_run == 'true' && '_DRYRUN' || '' }}_log-${{ env.DATE }}

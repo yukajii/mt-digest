@@ -1,0 +1,57 @@
+name: Export archive
+
+# Manual only. This workflow is read-only with respect to Buttondown: it
+# issues GET requests and uploads the result as an artifact. It never creates,
+# patches or sends an email, and it is deliberately not on a schedule.
+on:
+  workflow_dispatch:
+    inputs:
+      schema_only:
+        description: "Only print the Email object's fields, write nothing."
+        required: false
+        type: boolean
+        default: false
+      limit:
+        description: "Stop after N emails (blank = the whole archive)."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install requests
+        run: pip install "requests==2.32.3"
+
+      - name: Export archive
+        env:
+          BUTTONDOWN_TOKEN: ${{ secrets.BUTTONDOWN_TOKEN }}
+        run: |
+          ARGS=()
+          if [[ "${{ github.event.inputs.schema_only }}" == "true" ]]; then
+            ARGS+=(--schema-only)
+          fi
+          if [[ -n "${{ github.event.inputs.limit }}" ]]; then
+            ARGS+=(--limit "${{ github.event.inputs.limit }}")
+          fi
+          python export_archive.py --out archive "${ARGS[@]}"
+
+      - name: Upload archive
+        if: github.event.inputs.schema_only != 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: mt-digest-archive
+          path: archive/
+          retention-days: 30
