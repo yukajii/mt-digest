@@ -437,6 +437,20 @@ def _extract_json(text: str):
     return None
 
 
+def _tidy_takeaway(text: str) -> str:
+    """Normalise one takeaway.
+
+    Terminal punctuation is asked for in the prompt but enforced here: it is
+    the one rule that can be fixed deterministically, and the first live run
+    came back with no full stops at all on any of the five.
+    """
+    t = " ".join(text.split()).strip()
+    t = t.strip('"').strip()
+    if t and t[-1] not in ".!?":
+        t += "."
+    return t
+
+
 def draft_takeaways(papers: List[Dict], picks: List[int]):
     """One practitioner-facing line per paper.
 
@@ -455,12 +469,20 @@ def draft_takeaways(papers: List[Dict], picks: List[int]):
         translation or localisation practitioner should take from it.
 
         Rules:
-        - At most 28 words per sentence. One sentence, no trailing period lists.
+        - One complete, grammatical sentence in the present tense, ending in a
+          full stop. Up to 35 words. If it will not fit, drop a detail rather
+          than dropping articles or verbs - it must read as English prose, not
+          as compressed notes.
         - Concrete: name the method, the number, or the limitation that matters.
         - No hype, no "this paper shows", no restating the title.
-        - If a paper is not really about translation, say what it is about and
-          why an MT practitioner might still care - or say plainly that it is
-          adjacent work.
+        - A paper counts as being about translation if it touches machine
+          translation, human translation, interpreting, localisation,
+          subtitling, or the evaluation of any of these. That includes
+          low-resource and sign-language translation, and it includes papers
+          whose contribution is only a corpus, benchmark or baseline for them.
+          Never describe such a paper as adjacent.
+        - Only when a paper has no translation component at all, open by naming
+          what it actually is, then say why an MT practitioner might still care.
 
         Return only JSON of this exact shape:
         {{"takeaways": [{{"n": 1, "text": "..."}}, {{"n": 2, "text": "..."}}]}}
@@ -485,7 +507,7 @@ def draft_takeaways(papers: List[Dict], picks: List[int]):
     for item in parsed["takeaways"]:
         if isinstance(item, dict) and isinstance(item.get("text"), str):
             try:
-                by_n[int(item["n"])] = item["text"].strip()
+                by_n[int(item["n"])] = _tidy_takeaway(item["text"])
             except (TypeError, ValueError):
                 continue
 
