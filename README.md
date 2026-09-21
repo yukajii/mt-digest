@@ -135,15 +135,16 @@ and repo-scale QA - not one about translation, under a preface obliged to claim
 they "shape machine translation systems". Its z-scores were 2.13, 1.91, 1.76,
 1.64, 1.53: no signal, just the top of a flat distribution.
 
-Measured over eight announcement batches:
+Measured over fourteen consecutive announcement batches (2026-09-01 to
+2026-09-20):
 
 | floor | mean papers/issue | empty issues |
 | ----- | ----------------- | ------------ |
 | none (old) | 5.0 | 0 |
-| z >= 1.8 | 3.2 | 0 |
-| **z >= 2.0** | **2.2** | **1 of 8** |
-| z >= 2.2 | 1.8 | 1 of 8 |
-| z >= 2.5 | 1.4 | 2 of 8 |
+| z >= 1.8 | 3.4 | 0 of 14 |
+| **z >= 2.0** | **2.6** | **1 of 14** |
+| z >= 2.2 | 1.9 | 1 of 14 |
+| z >= 2.5 | 1.5 | 3 of 14 |
 
 Two consequences worth knowing before changing the value:
 
