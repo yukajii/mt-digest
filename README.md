@@ -14,6 +14,8 @@ Published as **[Daily MT Picks](https://buttondown.com/daily-mt-picks/archive/)*
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mt_arxiv_digest.py`           | Fetches one arXiv announcement batch of `cs.CL` pre-prints, embeds them with [*e5-large-v2*](https://huggingface.co/intfloat/e5-large-v2), picks the top-*k* MT-related papers, calls the model in `PREFACE_MODEL` for a 2-3 sentence intro, and writes `mt_digest_YYYY-MM-DD.md` plus a JSON run log. |
 | `send_digest.py`               | Posts the generated Markdown to Buttondown via its REST API. Idempotent: a repeat call for an already-queued date is a no-op.                                                    |
+| `sync_to_site.py`              | Merges the e-mail body, the run log's headline and the send receipt into one Markdown file with front matter, for the yukajii.com archive.                        |
+| `export_archive.py`            | Read-only backfill: pulls every past issue out of Buttondown. GET requests only.                                                                                 |
 | `check_already_sent.py`        | Guard step: inspects the workflow's own artifacts and reports whether this date's digest already went out, so a reattempt run can skip the heavy steps.                          |
 | `.github/workflows/digest.yml` | GitHub Actions workflow. Runs at 07:20 UTC with reattempts at 11:20 and 15:20 (or on demand): builds the digest, e-mails it, uploads the Markdown and log as private artifacts, and files an issue if the last reattempt fails. |
 | `logs/`                        | JSON run logs, including per-paper relevance scores. Git-ignored; kept 30 days as CI artifacts.                                                                                 |
@@ -201,6 +203,34 @@ to trip over. `_tidy_title()` strips wrapping quotes, a trailing period and a
 leading label ("MT Digest: ..."), and rejects anything over fourteen words or
 carrying a banned phrase. A rejected or failed title is simply empty, and the
 page falls back to a dated heading - the issue is never blocked on a nicety.
+
+## Publishing to yukajii.com
+
+Each issue is staged into [yukajii-site](https://github.com/yukajii/yukajii-site),
+which renders `content/mt-digest/` into static pages.
+
+Three files hold the pieces, deliberately kept apart:
+
+| file | carries |
+| ---- | ------- |
+| `mt_digest_<date>.md` | the e-mail body, no front matter, exactly as Buttondown received it |
+| `logs/mt_digest_<date>.log` | the run log, including the web headline |
+| `logs/sent_<date>.json` | the send receipt, including the real Buttondown slug |
+
+The receipt exists because **the slug cannot be derived from the subject**.
+Buttondown appends a random suffix when a subject repeats, which has happened
+six times in the archive (`...-for-jul-24-2026-9525`). `sync_to_site.py` merges
+the three into `<publish-date>-<slug>.md` and exits quietly if any piece is
+missing, so a quiet batch or a skipped send never fails the build.
+
+**The workflow opens a pull request rather than pushing to the site's default
+branch.** That branch deploys, and publishing to a live domain on every send
+is a decision to make explicitly rather than inherit from a sync. Merging the
+PR is what publishes. To make it automatic instead, replace the branch-and-PR
+block with a commit straight onto the default branch.
+
+Requires `SITE_REPO_TOKEN`, a fine-grained PAT with Contents:write and
+Pull requests:write on `yukajii/yukajii-site`. Without it the step is a no-op.
 
 ## Issue format
 
