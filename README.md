@@ -14,6 +14,7 @@ Published as **[Daily MT Picks](https://buttondown.com/daily-mt-picks/archive/)*
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mt_arxiv_digest.py`           | Fetches one arXiv announcement batch of `cs.CL` pre-prints, embeds them with [*e5-large-v2*](https://huggingface.co/intfloat/e5-large-v2), picks the top-*k* MT-related papers, calls the model in `PREFACE_MODEL` for a 2-3 sentence intro, and writes `mt_digest_YYYY-MM-DD.md` plus a JSON run log. |
 | `send_digest.py`               | Posts the generated Markdown to Buttondown via its REST API. Idempotent: a repeat call for an already-queued date is a no-op.                                                    |
+| `set_canonical.py`             | Points each Buttondown archive page at its yukajii.com counterpart, but only once that page actually answers 200. Dry run unless `--apply`.                       |
 | `sync_to_site.py`              | Merges the e-mail body, the run log's headline and the send receipt into one Markdown file with front matter, for the yukajii.com archive.                        |
 | `export_archive.py`            | Read-only backfill: pulls every past issue out of Buttondown. GET requests only.                                                                                 |
 | `check_already_sent.py`        | Guard step: inspects the workflow's own artifacts and reports whether this date's digest already went out, so a reattempt run can skip the heavy steps.                          |
@@ -231,6 +232,30 @@ block with a commit straight onto the default branch.
 
 Requires `SITE_REPO_TOKEN`, a fine-grained PAT with Contents:write and
 Pull requests:write on `yukajii/yukajii-site`. Without it the step is a no-op.
+
+## Canonical URLs
+
+Both pages exist on purpose. The Buttondown archive keeps the full abstracts;
+the site page leads with the headline and the takeaways. `canonical_url` tells
+search engines which is primary so the overlap is consolidated rather than
+split between them.
+
+**This is not done at send time.** When an issue sends, its site page does not
+exist yet - the workflow stages it as a pull request, and the URL 404s until
+that is merged. A canonical pointing at a missing page is worse than none. So
+`set_canonical.py` runs separately and sets the canonical only once the page
+answers 200, which makes it self-healing: run it again after merging and it
+catches up on whatever is now live.
+
+It is read-only unless `--apply` is passed, and the workflow
+(`.github/workflows/set-canonical.yml`) is manual-only with `apply` defaulting
+to off. It is the one workflow that modifies already-sent emails, so it is
+deliberately not scheduled.
+
+The liveness check is by content length, not status code. The site is a
+single-page app, so an unknown path still answers 200 with the ~2 kB app
+shell; a real issue page is an order of magnitude bigger. A status-code-only
+check reported the archive live before it had deployed.
 
 ## Issue format
 

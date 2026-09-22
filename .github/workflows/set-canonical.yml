@@ -1,0 +1,53 @@
+name: Set canonical URLs
+
+# Manual only, and a dry run unless you tick `apply`.
+#
+# This is the one workflow that modifies emails Buttondown has already sent,
+# so it is deliberately not scheduled and defaults to writing nothing. It
+# touches a single field, canonical_url, and only on issues whose yukajii.com
+# page already answers 200 - which means it is safe to re-run and will pick up
+# whatever has been merged since.
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Actually write. Leave off for a dry run."
+        required: false
+        type: boolean
+        default: false
+      limit:
+        description: "Only look at the N most recent emails (blank = all)."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  canonical:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install requests
+        run: pip install "requests==2.32.3"
+
+      - name: Set canonical URLs
+        env:
+          BUTTONDOWN_TOKEN: ${{ secrets.BUTTONDOWN_TOKEN }}
+        run: |
+          ARGS=()
+          if [[ "${{ github.event.inputs.apply }}" == "true" ]]; then
+            ARGS+=(--apply)
+          fi
+          if [[ -n "${{ github.event.inputs.limit }}" ]]; then
+            ARGS+=(--limit "${{ github.event.inputs.limit }}")
+          fi
+          python set_canonical.py "${ARGS[@]}"
