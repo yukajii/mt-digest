@@ -18,11 +18,11 @@ MAX_RESULTS       = 400          # hard cap on papers fetched per day
 DEFAULT_MAX_PICKS = 5
 PREFACE_MODEL     = "gpt-5.4-mini"
 
-# Approximate USD per *million* tokens for PREFACE_MODEL, used only for the
-# cost figure in the run log. Update these whenever PREFACE_MODEL changes --
-# they are estimates, not billing data.
-USD_PER_MTOK_IN   = 5.00
-USD_PER_MTOK_OUT  = 5.00
+# USD per *million* tokens for PREFACE_MODEL, used only for the cost figure in
+# the run log. These are gpt-5.4-mini's published API rates; update them
+# whenever PREFACE_MODEL changes, or the logged cost quietly becomes fiction.
+USD_PER_MTOK_IN   = 0.75
+USD_PER_MTOK_OUT  = 4.50
 
 DEFAULT_DATE_LAG_DAYS = 5
 
