@@ -116,6 +116,11 @@ within a minute of a deadline.
 4. Ask `PREFACE_MODEL` for one practitioner takeaway per paper, then a web
    headline, then the issue intro.
 
+Those three calls come to roughly **$0.004 an issue**, about **$1.10 a year**,
+at gpt-5.4-mini's rates ($0.75/1M in, $4.50/1M out). `USD_PER_MTOK_IN` and
+`USD_PER_MTOK_OUT` only feed the figure in the run log - update them whenever
+`PREFACE_MODEL` changes, or that figure quietly becomes fiction.
+
 Every run writes the top 15 scores to `logs/mt_digest_<date>.log`, so the
 ranking can be audited after the fact. Each entry carries a raw cosine score
 and a `z` — its distance from that day's mean in standard deviations.
