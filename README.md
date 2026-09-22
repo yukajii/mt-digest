@@ -226,8 +226,10 @@ Three files hold the pieces, deliberately kept apart:
 The receipt exists because **the slug cannot be derived from the subject**.
 Buttondown appends a random suffix when a subject repeats, which has happened
 six times in the archive (`...-for-jul-24-2026-9525`). `sync_to_site.py` merges
-the three into `<publish-date>-<slug>.md` and exits quietly if any piece is
-missing, so a quiet batch or a skipped send never fails the build.
+the three into `<announcement-date>-<slug>.md` - the date in the page URL,
+rather than the send date, which a freshly created email does not have yet -
+and exits quietly if any piece is missing, so a quiet batch or a skipped send
+never fails the build.
 
 **The workflow opens a pull request rather than pushing to the site's default
 branch.** That branch deploys, and publishing to a live domain on every send
@@ -240,27 +242,46 @@ Pull requests:write on `yukajii/yukajii-site`. Without it the step is a no-op.
 
 ## Canonical URLs
 
-Both pages exist on purpose. The Buttondown archive keeps the full abstracts;
-the site page leads with the headline and the takeaways. `canonical_url` tells
-search engines which is primary so the overlap is consolidated rather than
-split between them.
+> **Setting `canonical_url` does not add a meta tag. It makes Buttondown 302
+> the issue's archive page to that URL.** The
+> [documentation](https://docs.buttondown.com/canonical-url) says the value
+> "appears in the meta tags of the email's HTML". Measured against a control
+> on 2026-09-22:
+>
+> ```
+> Sep 17 (canonical set)  HTTP 302  ->  yukajii.com/mt-digest/2026-09-17/
+> Sep 16 (no canonical)   HTTP 200  30,624B
+> ```
+>
+> So this is not a hint to search engines, it retires the Buttondown archive
+> page for that issue. Only the yukajii.com copy stays readable. That is the
+> intended outcome here - one public page per issue - but it is a bigger
+> action than the name suggests, so do not run this expecting a meta tag.
+
+The newsletter root and the archive index are unaffected, because the
+canonical is per-email. Only individual issue pages redirect.
+
+Because the archive page stops serving, an issue page must not link back to
+it: that link would return the reader to the page they are already on. The
+footer links to the newsletter root instead.
 
 **This is not done at send time.** When an issue sends, its site page does not
 exist yet - the workflow stages it as a pull request, and the URL 404s until
-that is merged. A canonical pointing at a missing page is worse than none. So
-`set_canonical.py` runs separately and sets the canonical only once the page
-answers 200, which makes it self-healing: run it again after merging and it
-catches up on whatever is now live.
+that is merged. Redirecting an archive page at a missing page would be worse
+than doing nothing. So `set_canonical.py` runs separately and acts only once
+the page answers 200, which makes it self-healing: run it again after merging
+and it catches up on whatever is now live.
 
 It is read-only unless `--apply` is passed, and the workflow
 (`.github/workflows/set-canonical.yml`) is manual-only with `apply` defaulting
-to off. It is the one workflow that modifies already-sent emails, so it is
-deliberately not scheduled.
+to off. It is the one workflow that modifies already-sent emails, and given
+what it actually does, it is deliberately not scheduled.
 
 The liveness check is by content length, not status code. The site is a
 single-page app, so an unknown path still answers 200 with the ~2 kB app
 shell; a real issue page is an order of magnitude bigger. A status-code-only
-check reported the archive live before it had deployed.
+check reported the archive live before it had deployed - had this script used
+one, it would have redirected every issue at the app shell.
 
 ## Issue format
 

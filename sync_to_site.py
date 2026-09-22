@@ -83,7 +83,6 @@ def main() -> int:
         print("[info] no headline in the run log; the page will fall back to a "
               "dated heading")
 
-    publish_date = (receipt.get("publish_date") or "")[:10] or date
     slug = receipt["slug"]
 
     front = {
@@ -101,7 +100,11 @@ def main() -> int:
 
     out_dir = pathlib.Path(ns.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{publish_date}-{slug}.md"
+    # Named by the arXiv announcement date, not the send date: that is the
+    # date in the page URL and the one the issue is *about*. A freshly created
+    # email has no publish_date yet anyway, so keying on it produced a
+    # directory that sorted by two different things.
+    out_path = out_dir / f"{date}-{slug}.md"
     out_path.write_text("\n".join(lines), encoding="utf-8")
 
     print(f"[ok] wrote {out_path.name}"

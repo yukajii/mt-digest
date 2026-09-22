@@ -4,10 +4,17 @@ set_canonical.py [--apply] [--limit N] [--site URL]
 
 Point each Buttondown archive page at its yukajii.com counterpart.
 
-Both pages exist on purpose: the e-mail archive keeps the full abstracts, the
-site page leads with the headline and the takeaways. `canonical_url` tells
-search engines which one is primary so the overlap is consolidated rather than
-split.
+WARNING: despite the name and the documentation, setting canonical_url does
+not add a meta tag. Buttondown 302s that issue's archive page to the URL, so
+the archive copy stops serving and only the yukajii.com page stays readable.
+Measured against a control on 2026-09-22:
+
+    Sep 17 (canonical set)  HTTP 302  ->  yukajii.com/mt-digest/2026-09-17/
+    Sep 16 (no canonical)   HTTP 200  30,624B
+
+That is the intended outcome here - one public page per issue - but it is a
+bigger action than "set a canonical" suggests. The newsletter root and the
+archive index are unaffected; the canonical is per-email.
 
 Why this is not done at send time: the site page does not exist yet. The
 workflow stages each issue as a pull request, and until that is merged the URL
