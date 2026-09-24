@@ -330,15 +330,28 @@ EDITOR_SYSTEM = (
 
 # Every issue in the archive opens "Today's MT digest highlights/spotlights...".
 # Rotating the opening move by date breaks that groove without needing state.
+#
+# Every angle points at the research. Earlier versions pointed at the
+# collection instead - "the single most consequential finding in the set",
+# "what kind of day this was for MT on arXiv" - and the prefaces came back
+# appraising the line-up rather than reporting the work: "the rest of the set
+# is thinner", "the day's centrepiece". That reads like a private briefing on
+# how the curation went, not like something published.
 PREFACE_ANGLES = [
-    "Open by naming the single most consequential or surprising finding in the set.",
-    "Open with the question these papers are collectively circling.",
-    "Open by characterising what kind of day this was for MT on arXiv - dense, thin, evaluation-heavy, dominated by one language family, whatever actually fits.",
-    "Open with one concrete result, number or benchmark drawn from a specific paper.",
-    "Open with what is at stake here for someone actually shipping translation systems.",
-    "Open by naming a tension or disagreement between two of the papers.",
-    "Open with the shift in what researchers appear to be measuring or optimising for.",
+    "Open with the finding that would change how someone builds or evaluates a translation system.",
+    "Open with the question this research is circling.",
+    "Open with a concrete result, number or benchmark from one of the papers.",
+    "Open with what is at stake for someone shipping translation systems.",
+    "Open with a disagreement or tension between two of the findings.",
+    "Open with the shift in what researchers are measuring or optimising for.",
+    "Open with the language, language pair or domain this work covers.",
 ]
+
+# Curation vocabulary. The preface is about the research, not about the
+# edition it arrived in, so any of these showing up means the prompt slipped.
+_META_WORDS = ("the set", "this issue", "the selection", "the batch",
+               "the mix", "the rest", "centrepiece", "the line-up",
+               "the stack", "today's papers", "the day's")
 
 BANNED_OPENERS = ("today", "this digest", "in today", "this week", "welcome")
 
@@ -440,11 +453,11 @@ def draft_preface(date: dt.date, papers: List[Dict], picks: List[int],
     thin_note = ""
     if n_below_floor:
         thin_note = (
-            f"\n        This batch was thin: {n_below_floor} of the "
-            f"{len(chosen)} papers below scored under our relevance bar and "
-            "are included only so the issue is not empty. Say so in passing, "
-            "plainly and without apologising, and do not imply the set hangs "
-            "together better than it does.\n"
+            f"\n        {n_below_floor} of these {len(chosen)} papers are only "
+            "loosely connected to translation. Write about what they actually "
+            "cover rather than stretching them toward MT. Do not mention that "
+            "they were borderline, and do not apologise for them - the reader "
+            "is not owed an account of how the issue was assembled.\n"
         )
 
     user_msg = textwrap.dedent(f"""
@@ -460,9 +473,15 @@ def draft_preface(date: dt.date, papers: List[Dict], picks: List[int],
           "landscape" or "a common thread".
         - Name specifics. Prefer the actual language pair, metric, benchmark or
           number over abstractions like "advances in evaluation".
-        - Do not claim the papers are about machine translation if they are not.
-          If the day's selection is mostly adjacent NLP work, say so plainly -
-          a thin day is worth reporting as a thin day.
+        - Write about the research, not about the edition it arrives in. The
+          reader does not know how these papers were chosen and has no reason
+          to care. Never say "the set", "this issue", "the selection", "the
+          batch", "the mix", "the rest", "the day's", "centrepiece", and pass
+          no verdict on whether this was a strong or a thin day.
+        - Describe each paper as what it is. Where one is not about
+          translation, say what it does cover rather than implying a link that
+          is not there - as a plain fact about the paper, not a complaint
+          about what else was available.
         - Do not re-list the paper titles.
 
         Papers in this issue:
@@ -471,8 +490,16 @@ def draft_preface(date: dt.date, papers: List[Dict], picks: List[int],
 
     reply, usage = openai_chat(PREFACE_MODEL, EDITOR_SYSTEM, user_msg)
 
-    if reply.lower().lstrip("*_# ").startswith(BANNED_OPENERS):
+    low = reply.lower()
+    if low.lstrip("*_# ").startswith(BANNED_OPENERS):
         print(f"[warn] preface still opens with a banned phrase: {reply[:60]!r}")
+
+    # Curation-talk is the failure mode that made an issue read like a private
+    # briefing rather than a newsletter. Worth surfacing in the log so a drift
+    # back shows up without anyone having to re-read a month of prefaces.
+    meta = [w for w in _META_WORDS if w in low]
+    if meta:
+        print(f"[warn] preface talks about the edition, not the research: {meta}")
 
     return reply, user_msg, usage
 
