@@ -17,10 +17,11 @@ Picking from what is actually outstanding fixes both: idle days only happen
 when there is genuinely nothing to send, and a failed batch is simply still
 outstanding tomorrow.
 
-MIN_AGE_DAYS is 7 rather than the minimum safe 4. Five batches a week over
-seven run-days means two idle days whatever the value; seven is the one that
-puts them on Friday and Saturday, so issues land Sunday to Thursday and the
-newsletter breathes in time with arXiv instead of against it.
+arXiv publishes in discrete batches, not continuously: five times a week, at
+20:00 ET, a whole batch goes live at once. So the wait needed is hours past
+an announcement, not days past a submission. MIN_AGE_DAYS is 1, which puts
+each issue out the day after its batch is announced - announcement days are
+Sun-Thu, so issues land Mon-Fri with quiet weekends.
 
 Standard library only: this runs before `pip install` in CI, so the heavy
 generation dependencies are not available yet.
@@ -38,7 +39,18 @@ from arxiv_schedule import (announcement_days_between, is_announcement_day,
                             previous_announcement_day)
 from check_already_sent import ArtifactCheckUnavailable, already_sent
 
-MIN_AGE_DAYS = 7      # see the module docstring for why 7 and not 4
+# One day: a batch announced at 20:00 ET on day A is queried on day A+1.
+# Announcement days are Sun-Thu, so A+1 lands on Mon-Fri - weekday issues,
+# quiet weekends, and papers one day past announcement.
+#
+# This is an age in days, not a safety margin in hours. The margin comes from
+# the cron times: announcement is 00:00 UTC (01:00 in winter) and the first
+# run is 11:20 UTC. Measured on 2026-09-24, the 2026-09-23 batch was fully
+# indexed 10.2 hours after announcement and returned 0 before it, so 11 hours
+# is inside the proven range. Do not move the crons earlier without
+# re-measuring: a partially indexed batch would ship as a short issue and be
+# marked sent.
+MIN_AGE_DAYS = 1
 
 # How far back to hunt for something outstanding. This MUST stay well inside
 # the artifact retention in digest.yml (30 days), because "sent" is inferred

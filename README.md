@@ -20,7 +20,7 @@ Published as **[Daily MT Picks](https://buttondown.com/daily-mt-picks/archive/)*
 | `arxiv_schedule.py`            | The announcement-day rules and batch windows. Standard library only, so `pick_batch.py` can use it before `pip install`.                                                         |
 | `pick_batch.py`                | Chooses which batch to digest: the oldest one that has aged enough and has no sent-artifact.                                                                                     |
 | `check_already_sent.py`        | Whether a given date's digest already went out, inferred from its artifact.                                                                                                     |
-| `.github/workflows/digest.yml` | GitHub Actions workflow. Runs at 07:20 UTC with reattempts at 11:20 and 15:20 (or on demand): builds the digest, e-mails it, uploads the Markdown and log as private artifacts, and files an issue if the last reattempt fails. |
+| `.github/workflows/digest.yml` | GitHub Actions workflow. Runs at 11:20 UTC with reattempts at 15:20 and 19:20 (or on demand): builds the digest, e-mails it, uploads the Markdown and log as private artifacts, and files an issue if the last reattempt fails. |
 | `logs/`                        | JSON run logs, including per-paper relevance scores. Git-ignored; kept 30 days as CI artifacts.                                                                                 |
 
 ---
@@ -57,7 +57,7 @@ HuggingFace cache.
 
 The date is an arXiv **announcement day**, not a submission day - see
 [Announcement batches](#announcement-batches) below. Run by hand with no date,
-the script falls back to **today minus `DEFAULT_DATE_LAG_DAYS`** (7), rolled
+the script falls back to **today minus `DEFAULT_DATE_LAG_DAYS`** (1), rolled
 back to the most recent announcement day, so a bare `python mt_arxiv_digest.py`
 lands on roughly the batch CI would be working on. The `DATE` environment
 variable is honoured as a fallback, which is how the workflow passes in the
@@ -129,22 +129,49 @@ Picking from what is outstanding fixes both: a run only idles when there is
 genuinely nothing to send, and a failed batch is simply still outstanding the
 next day.
 
-### Why `MIN_AGE_DAYS` is 7
+### Why `MIN_AGE_DAYS` is 1
 
-Five batches a week across seven run-days leaves two idle days whatever the
-value. All the age does is decide *which* days:
+arXiv publishes in **discrete batches, not continuously**. Five times a week,
+at 20:00 ET, a whole batch goes live at once. So the wait a digest needs is
+hours past an announcement, not days past a submission - which is what an
+earlier five-day lag was really compensating for.
 
-| min age | issues arrive | idle |
-| ------- | ------------- | ---- |
-| 5 | Fri Sat Sun Mon Tue | Wed, Thu |
-| 6 | Sat Sun Mon Tue Wed | Thu, Fri |
-| **7** | **Sun Mon Tue Wed Thu** | **Fri, Sat** |
+Announcement days are Sunday to Thursday, so sending one day later lands on
+Monday to Friday:
 
-Seven puts the quiet days on Friday and Saturday, the two days arXiv itself
-does not announce, so the newsletter keeps time with its source. The cost is
-that an issue covers papers announced a week earlier. Four days is the
-technical minimum (a Thursday batch is only announced on Sunday), so seven
-also leaves generous slack for arXiv holidays.
+| email | batch | covers papers submitted |
+| ----- | ----- | ----------------------- |
+| Mon | Sun batch | Thu 14:00 - Fri 14:00 ET |
+| Tue | Mon batch | **Fri 14:00 - Mon 14:00 ET** (the weekend, 150-200 papers) |
+| Wed | Tue batch | Mon 14:00 - Tue 14:00 ET |
+| Thu | Wed batch | Tue 14:00 - Wed 14:00 ET |
+| Fri | Thu batch | Wed 14:00 - Thu 14:00 ET |
+
+Weekday issues, quiet weekends, and nothing older than a day past its
+announcement. Tuesday's is the big one, because arXiv welds Friday afternoon,
+both weekend days and Monday morning into a single announcement - there is no
+way to give the weekend its own issue without inventing a split arXiv does not
+make.
+
+### Cron times are part of the safety margin
+
+The margin is not in `MIN_AGE_DAYS`, it is in when the crons fire. A batch is
+announced at 20:00 ET, which is 00:00 UTC the next day (01:00 in winter), and
+the API takes a few hours to reflect it. Measured on 2026-09-24:
+
+```
+batch           announced (UTC)   hours ago   papers
+2026-09-23 Wed  09-24 00:00            10.2       92
+2026-09-24 Thu  09-25 00:00           -13.8        0   <- not announced yet
+```
+
+Fully indexed at 10.2 hours, nothing at all before announcement. The crons run
+at 11:20, 15:20 and 19:20 UTC, so the first is ~11 hours past announcement,
+inside the proven range.
+
+**Do not move the crons earlier without re-measuring.** A partially indexed
+batch would ship as a short issue and be marked sent, and the relevance floor
+would make it look like a legitimately thin day.
 
 ### The lookback window
 
@@ -375,8 +402,8 @@ Two encrypted repository secrets are required:
 | `OPENAI_API_KEY`   | OpenAI key with access to `PREFACE_MODEL`. |
 | `BUTTONDOWN_TOKEN` | The Buttondown API token from above.    |
 
-The job runs on three crons - 07:20, 11:20 and 15:20 UTC - which all resolve
-to the *same* target date. The later two are reattempts for when arXiv throttles
+The job runs on three crons - 11:20, 15:20 and 19:20 UTC - which all resolve
+through `pick_batch.py`. The later two are reattempts for when arXiv throttles
 the runner's shared IP with an HTTP 429. They are cheap no-ops on a good day:
 `check_already_sent.py` inspects the run's artifacts and short-circuits every
 heavy step once that date's digest has gone out, and the Buttondown send is
@@ -390,7 +417,7 @@ The job also:
   a day;
 * uploads `mt_digest_md-YYYY-MM-DD` and `mt_digest_log-YYYY-MM-DD` as
   30-day private artifacts;
-* opens (or comments on) a `digest-failure` issue **only when the 15:20
+* opens (or comments on) a `digest-failure` issue **only when the 19:20
   reattempt fails**. An earlier failure is what the reattempts exist for, so
   reporting it then would be noise; if the last one has also failed, that
   date's digest is genuinely stranded.

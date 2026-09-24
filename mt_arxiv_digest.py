@@ -28,7 +28,7 @@ USD_PER_MTOK_OUT  = 4.50
 
 # Only used when the script is run by hand with no date. CI resolves the
 # target through pick_batch.py, which picks the oldest unsent batch instead.
-DEFAULT_DATE_LAG_DAYS = 7
+DEFAULT_DATE_LAG_DAYS = 1
 
 # Relevance floor, in standard deviations above the batch's own mean score.
 # Anything below this is dropped even if it would otherwise make the top 5,
