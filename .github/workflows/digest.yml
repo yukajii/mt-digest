@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       date:
-        description: "UTC date to fetch (YYYY-MM-DD). Leave blank for 5 days ago."
+        description: "Announcement date to digest (YYYY-MM-DD). Blank = oldest unsent batch."
         required: false
         type: string
       dry_run:
@@ -14,18 +14,26 @@ on:
         type: boolean
         default: false
   schedule:
-    # arXiv occasionally blocks the runner's shared IP with HTTP 429. These
-    # runs all resolve to the SAME target date (5 days ago), so the later
-    # times act as reattempts if an earlier one is throttled. The Buttondown
-    # send is idempotent and a guard step skips runs whose digest already
-    # went out, so extra attempts are cheap no-ops on successful days.
-    - cron: "20 7 * * *"         # daily 07:20 UTC (primary)
-    - cron: "20 11 * * *"        # reattempt #1
-    - cron: "20 15 * * *"        # reattempt #2
+    # arXiv occasionally blocks the runner's shared IP with HTTP 429, so the
+    # later times act as reattempts. All three resolve through pick_batch.py,
+    # which picks the oldest batch with no sent-artifact: once one run has
+    # succeeded the later ones find nothing outstanding and stand down. A run
+    # that fails outright leaves its batch outstanding, so the next run simply
+    # picks it up again rather than moving on and losing it.
+    #
+    # Times matter here. A batch is announced at 20:00 ET, which is 00:00 UTC
+    # the next day (01:00 in winter), and the API needs a few hours to reflect
+    # it. Measured on 2026-09-24: fully indexed 10.2 hours after announcement,
+    # zero papers before it. 11:20 UTC is the first run that sits inside the
+    # proven range. Moving these earlier risks shipping a partially indexed
+    # batch as a short issue and marking it sent.
+    - cron: "20 11 * * *"        # daily 11:20 UTC (primary, ~11h after announcement)
+    - cron: "20 15 * * *"        # reattempt #1
+    - cron: "20 19 * * *"        # reattempt #2
 
 permissions:
   contents: write
-  actions: read          # guard step lists artifacts to detect an already-sent digest
+  actions: read          # pick_batch lists artifacts to find what is still outstanding
   issues: write          # failure report after the last reattempt of the day
 
 # ── job ─────────────────────────────────────────────────────────────────
@@ -38,50 +46,29 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v5
 
-      # 2. pick the DATE (bash only, no deps) so the guard can run cheaply
-      - name: Determine DATE
-        run: |
-          # DATE is the arXiv ANNOUNCEMENT day whose batch we digest.
-          #  - workflow_dispatch + input set → use that
-          #  - otherwise → today - 5 days (see DEFAULT_DATE_LAG_DAYS)
-          #
-          # arXiv announces Sun-Thu only, so Friday and Saturday roll back to
-          # Thursday. Sunday is a real announcement day and is left alone.
-          # This MUST stay in step with resolve_target_date() in
-          # mt_arxiv_digest.py - the guard has to run before pip install, so
-          # the rule is deliberately duplicated here in bash.
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.date }}" ]]; then
-            DATE="${{ github.event.inputs.date }}"
-          else
-            DATE="$(date -u -d '5 days ago' +%F)"
-          fi
-
-          DOW="$(date -u -d "$DATE" +%u)"     # 1=Mon .. 5=Fri, 6=Sat, 7=Sun
-          if [[ "$DOW" -eq 5 ]]; then
-            DATE="$(date -u -d "$DATE -1 day" +%F)"     # Fri -> Thu
-          elif [[ "$DOW" -eq 6 ]]; then
-            DATE="$(date -u -d "$DATE -2 days" +%F)"    # Sat -> Thu
-          fi
-
-          echo "DATE=$DATE" >> "$GITHUB_ENV"
-          echo "Announcement batch (resolved): $DATE ($(date -u -d "$DATE" +%A))"
-
-      # 3. skip guard: if this digest already went out (e.g. an earlier
-      #    reattempt today succeeded), skip the heavy steps below and avoid
-      #    re-hitting arXiv. Never fails the build (defaults to "proceed").
-      #    A dry run deliberately skips this: it never sends, so "already
-      #    sent" is not a reason to stop, and re-running a past date is the
-      #    whole point of the mode.
-      - name: Skip if already sent
-        id: guard
-        if: github.event.inputs.dry_run != 'true'
+      # 2. pick the batch -----------------------------------------------
+      #    Standard library only, so this runs before pip install. It picks
+      #    the OLDEST announcement batch that has aged enough and has no
+      #    mt_digest_md-<DATE> artifact, rather than deriving a date from
+      #    today. The arithmetic it replaced ("today - 5, rolled back to an
+      #    announcement day") silently re-targeted Thursday on every
+      #    Wednesday and Thursday run, because Friday and Saturday both roll
+      #    back to it - the digest went quiet mid-week with five announced
+      #    batches sitting unsent.
+      - name: Pick batch
+        id: target
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python3 check_already_sent.py "$DATE"
+        run: |
+          ARGS=()
+          if [[ -n "${{ github.event.inputs.date }}" ]]; then
+            ARGS+=(--date "${{ github.event.inputs.date }}")
+          fi
+          python3 pick_batch.py "${ARGS[@]}"
 
       # 4. cache ONLY pip (no HF / torch dirs) ---------------------------
       - name: Cache pip
-        if: success() && steps.guard.outputs.already_sent != 'true'
+        if: success() && steps.target.outputs.found == 'true'
         uses: actions/cache@v5
         with:
           path: ~/.cache/pip
@@ -90,13 +77,13 @@ jobs:
 
       # 5. Python --------------------------------------------------------
       - name: Set up Python
-        if: success() && steps.guard.outputs.already_sent != 'true'
+        if: success() && steps.target.outputs.found == 'true'
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Install dependencies
-        if: success() && steps.guard.outputs.already_sent != 'true'
+        if: success() && steps.target.outputs.found == 'true'
         run: pip install -r requirements.txt
 
       # 5b. cache the sentence-transformer weights -----------------------
@@ -104,7 +91,7 @@ jobs:
       #     scheduled runs a day, so re-fetching it each time is the single
       #     largest cost in the job.
       - name: Cache HuggingFace models
-        if: success() && steps.guard.outputs.already_sent != 'true'
+        if: success() && steps.target.outputs.found == 'true'
         uses: actions/cache@v5
         with:
           path: ~/.cache/huggingface
@@ -117,7 +104,7 @@ jobs:
       #    so record it as an output and let the later steps stand down.
       - name: Build digest
         id: build
-        if: success() && steps.guard.outputs.already_sent != 'true'
+        if: success() && steps.target.outputs.found == 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
@@ -208,7 +195,7 @@ jobs:
           retention-days: ${{ github.event.inputs.dry_run == 'true' && 7 || 30 }}
 
       - name: Upload JSON log
-        if: success() && steps.guard.outputs.already_sent != 'true' && steps.build.outcome == 'success'
+        if: success() && steps.target.outputs.found == 'true' && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v6
         with:
           name: mt_digest${{ github.event.inputs.dry_run == 'true' && '_DRYRUN' || '' }}_log-${{ env.DATE }}
@@ -221,7 +208,7 @@ jobs:
       #    for, so filing an issue then would be noise; if 15:20 has also
       #    failed, the digest for this date is genuinely stranded.
       - name: Open failure issue
-        if: failure() && github.event.schedule == '20 15 * * *'
+        if: failure() && github.event.schedule == '20 19 * * *'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

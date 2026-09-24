@@ -17,8 +17,10 @@ Published as **[Daily MT Picks](https://buttondown.com/daily-mt-picks/archive/)*
 | `set_canonical.py`             | Points each Buttondown archive page at its yukajii.com counterpart, but only once that page actually answers 200. Dry run unless `--apply`.                       |
 | `sync_to_site.py`              | Merges the e-mail body, the run log's headline and the send receipt into one Markdown file with front matter, for the yukajii.com archive.                        |
 | `export_archive.py`            | Read-only backfill: pulls every past issue out of Buttondown. GET requests only.                                                                                 |
-| `check_already_sent.py`        | Guard step: inspects the workflow's own artifacts and reports whether this date's digest already went out, so a reattempt run can skip the heavy steps.                          |
-| `.github/workflows/digest.yml` | GitHub Actions workflow. Runs at 07:20 UTC with reattempts at 11:20 and 15:20 (or on demand): builds the digest, e-mails it, uploads the Markdown and log as private artifacts, and files an issue if the last reattempt fails. |
+| `arxiv_schedule.py`            | The announcement-day rules and batch windows. Standard library only, so `pick_batch.py` can use it before `pip install`.                                                         |
+| `pick_batch.py`                | Chooses which batch to digest: the oldest one that has aged enough and has no sent-artifact.                                                                                     |
+| `check_already_sent.py`        | Whether a given date's digest already went out, inferred from its artifact.                                                                                                     |
+| `.github/workflows/digest.yml` | GitHub Actions workflow. Runs at 11:20 UTC with reattempts at 15:20 and 19:20 (or on demand): builds the digest, e-mails it, uploads the Markdown and log as private artifacts, and files an issue if the last reattempt fails. |
 | `logs/`                        | JSON run logs, including per-paper relevance scores. Git-ignored; kept 30 days as CI artifacts.                                                                                 |
 
 ---
@@ -54,19 +56,19 @@ HuggingFace cache.
 ```
 
 The date is an arXiv **announcement day**, not a submission day - see
-[Announcement batches](#announcement-batches) below. With no date given the
-script targets **today minus `DEFAULT_DATE_LAG_DAYS`** (currently 5), rolled
-back to the most recent announcement day. The lag exists because arXiv's
-`submittedDate` filter only settles once a batch has been announced. The
-`DATE` environment variable is honoured as a fallback, which is how CI passes
-the date in.
+[Announcement batches](#announcement-batches) below. Run by hand with no date,
+the script falls back to **today minus `DEFAULT_DATE_LAG_DAYS`** (1), rolled
+back to the most recent announcement day, so a bare `python mt_arxiv_digest.py`
+lands on roughly the batch CI would be working on. The `DATE` environment
+variable is honoured as a fallback, which is how the workflow passes in the
+date `pick_batch.py` chose.
 
 `--print-date` resolves the date without loading the embedding model or the
-OpenAI client, so it returns instantly. It is a local convenience only: the
-workflow deliberately computes the same date in bash instead, because the
-already-sent guard has to run *before* `pip install`. That means the lag and
-the announcement-day rollback are implemented twice, in `resolve_target_date()` and in
-the "Determine DATE" step. **Change one and you must change the other.**
+OpenAI client, so it returns instantly.
+
+In CI the date does not come from this arithmetic at all - `pick_batch.py`
+picks the oldest batch still outstanding. See
+[Which batch gets sent](#which-batch-gets-sent).
 
 ---
 
@@ -105,6 +107,82 @@ One caveat: arXiv's range filter is inclusive at both ends and minute-granular,
 so batch edges are not perfectly clean. Measured over the week of 2026-09-14,
 the tiling accounts for 521 of 522 papers. The single straggler is submitted
 within a minute of a deadline.
+
+## Which batch gets sent
+
+`pick_batch.py` picks the **oldest** announcement batch that has aged at least
+`MIN_AGE_DAYS` and has no `mt_digest_md-<DATE>` artifact. It runs before
+`pip install`, so it and `arxiv_schedule.py` are standard library only.
+
+This replaced arithmetic of the form "today minus five, rolled back to an
+announcement day", which had two faults:
+
+- **It went quiet mid-week.** Friday and Saturday both roll back to Thursday,
+  so every Wednesday and Thursday run re-targeted a batch already sent. On
+  2026-09-23 all three runs resolved to 2026-09-17 and skipped, while five
+  announced batches sat unsent behind them.
+- **It lost batches.** The Sunday, Monday, Tuesday and Wednesday batches each
+  got exactly one run-day. If those three crons all failed, that batch was
+  never targeted again.
+
+Picking from what is outstanding fixes both: a run only idles when there is
+genuinely nothing to send, and a failed batch is simply still outstanding the
+next day.
+
+### Why `MIN_AGE_DAYS` is 1
+
+arXiv publishes in **discrete batches, not continuously**. Five times a week,
+at 20:00 ET, a whole batch goes live at once. So the wait a digest needs is
+hours past an announcement, not days past a submission - which is what an
+earlier five-day lag was really compensating for.
+
+Announcement days are Sunday to Thursday, so sending one day later lands on
+Monday to Friday:
+
+| email | batch | covers papers submitted |
+| ----- | ----- | ----------------------- |
+| Mon | Sun batch | Thu 14:00 - Fri 14:00 ET |
+| Tue | Mon batch | **Fri 14:00 - Mon 14:00 ET** (the weekend, 150-200 papers) |
+| Wed | Tue batch | Mon 14:00 - Tue 14:00 ET |
+| Thu | Wed batch | Tue 14:00 - Wed 14:00 ET |
+| Fri | Thu batch | Wed 14:00 - Thu 14:00 ET |
+
+Weekday issues, quiet weekends, and nothing older than a day past its
+announcement. Tuesday's is the big one, because arXiv welds Friday afternoon,
+both weekend days and Monday morning into a single announcement - there is no
+way to give the weekend its own issue without inventing a split arXiv does not
+make.
+
+### Cron times are part of the safety margin
+
+The margin is not in `MIN_AGE_DAYS`, it is in when the crons fire. A batch is
+announced at 20:00 ET, which is 00:00 UTC the next day (01:00 in winter), and
+the API takes a few hours to reflect it. Measured on 2026-09-24:
+
+```
+batch           announced (UTC)   hours ago   papers
+2026-09-23 Wed  09-24 00:00            10.2       92
+2026-09-24 Thu  09-25 00:00           -13.8        0   <- not announced yet
+```
+
+Fully indexed at 10.2 hours, nothing at all before announcement. The crons run
+at 11:20, 15:20 and 19:20 UTC, so the first is ~11 hours past announcement,
+inside the proven range.
+
+**Do not move the crons earlier without re-measuring.** A partially indexed
+batch would ship as a short issue and be marked sent, and the relevance floor
+would make it look like a legitimately thin day.
+
+### The lookback window
+
+`LOOKBACK_DAYS` is 14 and **must stay well inside the 30-day artifact
+retention** in `digest.yml`. "Sent" is inferred from the artifact, so once one
+expires its batch looks outstanding again - a lookback near the retention
+window would quietly re-send month-old issues.
+
+If the artifact API cannot be reached, `pick_batch.py` stands down rather than
+guessing. Treating an outage as "not sent" would re-send a batch subscribers
+already have.
 
 ## How papers are chosen
 
@@ -324,8 +402,8 @@ Two encrypted repository secrets are required:
 | `OPENAI_API_KEY`   | OpenAI key with access to `PREFACE_MODEL`. |
 | `BUTTONDOWN_TOKEN` | The Buttondown API token from above.    |
 
-The job runs on three crons - 07:20, 11:20 and 15:20 UTC - which all resolve
-to the *same* target date. The later two are reattempts for when arXiv throttles
+The job runs on three crons - 11:20, 15:20 and 19:20 UTC - which all resolve
+through `pick_batch.py`. The later two are reattempts for when arXiv throttles
 the runner's shared IP with an HTTP 429. They are cheap no-ops on a good day:
 `check_already_sent.py` inspects the run's artifacts and short-circuits every
 heavy step once that date's digest has gone out, and the Buttondown send is
@@ -339,7 +417,7 @@ The job also:
   a day;
 * uploads `mt_digest_md-YYYY-MM-DD` and `mt_digest_log-YYYY-MM-DD` as
   30-day private artifacts;
-* opens (or comments on) a `digest-failure` issue **only when the 15:20
+* opens (or comments on) a `digest-failure` issue **only when the 19:20
   reattempt fails**. An earlier failure is what the reattempts exist for, so
   reporting it then would be noise; if the last one has also failed, that
   date's digest is genuinely stranded.

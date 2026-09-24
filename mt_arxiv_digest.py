@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import argparse, datetime as dt, json, os, pathlib, random, re, textwrap, warnings, time
 from typing import List, Dict, Tuple
-from zoneinfo import ZoneInfo
 
 import numpy as np
 import arxiv
+
+from arxiv_schedule import (batch_window, is_announcement_day,
+                            previous_announcement_day)
 
 # -- CONSTANTS -----------------------------------------------------------
 MAX_RESULTS       = 400          # hard cap on papers fetched per day
@@ -24,7 +26,9 @@ PREFACE_MODEL     = "gpt-5.4-mini"
 USD_PER_MTOK_IN   = 0.75
 USD_PER_MTOK_OUT  = 4.50
 
-DEFAULT_DATE_LAG_DAYS = 5
+# Only used when the script is run by hand with no date. CI resolves the
+# target through pick_batch.py, which picks the oldest unsent batch instead.
+DEFAULT_DATE_LAG_DAYS = 1
 
 # Relevance floor, in standard deviations above the batch's own mean score.
 # Anything below this is dropped even if it would otherwise make the top 5,
@@ -170,83 +174,6 @@ def clean_abstract(text: str) -> str:
     t = re.sub(r"\\[a-zA-Z]+\s*", " ", t)          # any command left over
     t = re.sub(r"\s+", " ", t)
     return t.strip()
-
-
-# -- ARXIV ANNOUNCEMENT SCHEDULE -----------------------------------------
-# https://info.arxiv.org/help/availability.html
-#
-# arXiv announces five batches a week, never on Friday or Saturday. Each
-# batch closes at 14:00 ET and goes live at 20:00 ET the same day:
-#
-#   submitted Mon 14:00 - Tue 14:00  ->  announced Tue 20:00
-#   submitted Tue 14:00 - Wed 14:00  ->  announced Wed 20:00
-#   submitted Wed 14:00 - Thu 14:00  ->  announced Thu 20:00
-#   submitted Thu 14:00 - Fri 14:00  ->  announced Sun 20:00
-#   submitted Fri 14:00 - Mon 14:00  ->  announced Mon 20:00   <- weekend
-#
-# The last row is why this module works in batches rather than calendar
-# days. Saturdays and Sundays carry real cs.CL submissions (38-56 a day in
-# a three-week sample); they are simply announced together with Friday
-# afternoon and Monday morning. Digesting one calendar day at a time, and
-# skipping the days arXiv does not *announce* on, silently dropped every
-# weekend submission - roughly 100 cs.CL papers a week.
-ARXIV_ET = ZoneInfo("America/New_York")
-ARXIV_DEADLINE_HOUR = 14          # 14:00 ET, the submission cut-off
-
-# announcement weekday -> (window start, window end) as day offsets from it.
-# Friday (4) and Saturday (5) are absent: arXiv announces nothing on those.
-_BATCH_SPAN = {
-    0: (-3, 0),    # Mon announces Fri 14:00 -> Mon 14:00
-    1: (-1, 0),    # Tue announces Mon 14:00 -> Tue 14:00
-    2: (-1, 0),    # Wed announces Tue 14:00 -> Wed 14:00
-    3: (-1, 0),    # Thu announces Wed 14:00 -> Thu 14:00
-    6: (-3, -2),   # Sun announces Thu 14:00 -> Fri 14:00
-}
-
-
-def is_announcement_day(day: dt.date) -> bool:
-    return day.weekday() in _BATCH_SPAN
-
-
-def previous_announcement_day(day: dt.date) -> dt.date:
-    """Roll back to the most recent day arXiv actually announced on."""
-    while not is_announcement_day(day):
-        day -= dt.timedelta(days=1)
-    return day
-
-
-def batch_window(announce_day: dt.date) -> Tuple[dt.datetime, dt.datetime]:
-    """UTC [start, end] of the submission window announced on `announce_day`.
-
-    Deadlines are wall-clock 14:00 ET, so the UTC offset shifts with US
-    daylight saving. Converting through the tz database keeps the window
-    correct across the March and November transitions.
-    """
-    if not is_announcement_day(announce_day):
-        raise ValueError(
-            f"{announce_day} ({announce_day:%A}) is not an arXiv announcement day"
-        )
-
-    start_off, end_off = _BATCH_SPAN[announce_day.weekday()]
-    deadline = dt.time(ARXIV_DEADLINE_HOUR, 0)
-
-    start_et = dt.datetime.combine(
-        announce_day + dt.timedelta(days=start_off), deadline, tzinfo=ARXIV_ET
-    )
-    end_et = dt.datetime.combine(
-        announce_day + dt.timedelta(days=end_off), deadline, tzinfo=ARXIV_ET
-    )
-    # The window is half-open in real time: (previous deadline, this one].
-    # arXiv's range filter is inclusive at both ends and minute-granular, so
-    # the start is nudged a minute forward rather than the end a minute back.
-    # Measured over the week of 2026-09-14: nudging the start loses 1 paper
-    # in 522 at the boundaries, nudging the end loses 6 -- submissions spike
-    # in the final minute before the deadline, so that minute must land
-    # inside a batch, not between two.
-    start_et += dt.timedelta(minutes=1)
-
-    return (start_et.astimezone(dt.timezone.utc),
-            end_et.astimezone(dt.timezone.utc))
 
 
 # -- HELPERS -------------------------------------------------------------
@@ -727,8 +654,9 @@ def resolve_target_date(cli_pos, cli_flag, env_var):
         return previous_announcement_day(explicit)
 
     # The lag covers the gap between a batch closing and the API indexing it.
-    # Worst case is a Thursday close, announced Sunday 20:00 ET, so four days
-    # is the true minimum and five leaves a day of slack for holidays.
+    # Four days is the true minimum (a Thursday close is announced Sunday
+    # 20:00 ET); seven is used so a hand-run with no date lands on the same
+    # batch CI would pick.
     return previous_announcement_day(
         dt.date.today() - dt.timedelta(days=DEFAULT_DATE_LAG_DAYS)
     )
