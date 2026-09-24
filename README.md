@@ -17,7 +17,9 @@ Published as **[Daily MT Picks](https://buttondown.com/daily-mt-picks/archive/)*
 | `set_canonical.py`             | Points each Buttondown archive page at its yukajii.com counterpart, but only once that page actually answers 200. Dry run unless `--apply`.                       |
 | `sync_to_site.py`              | Merges the e-mail body, the run log's headline and the send receipt into one Markdown file with front matter, for the yukajii.com archive.                        |
 | `export_archive.py`            | Read-only backfill: pulls every past issue out of Buttondown. GET requests only.                                                                                 |
-| `check_already_sent.py`        | Guard step: inspects the workflow's own artifacts and reports whether this date's digest already went out, so a reattempt run can skip the heavy steps.                          |
+| `arxiv_schedule.py`            | The announcement-day rules and batch windows. Standard library only, so `pick_batch.py` can use it before `pip install`.                                                         |
+| `pick_batch.py`                | Chooses which batch to digest: the oldest one that has aged enough and has no sent-artifact.                                                                                     |
+| `check_already_sent.py`        | Whether a given date's digest already went out, inferred from its artifact.                                                                                                     |
 | `.github/workflows/digest.yml` | GitHub Actions workflow. Runs at 07:20 UTC with reattempts at 11:20 and 15:20 (or on demand): builds the digest, e-mails it, uploads the Markdown and log as private artifacts, and files an issue if the last reattempt fails. |
 | `logs/`                        | JSON run logs, including per-paper relevance scores. Git-ignored; kept 30 days as CI artifacts.                                                                                 |
 
@@ -54,19 +56,19 @@ HuggingFace cache.
 ```
 
 The date is an arXiv **announcement day**, not a submission day - see
-[Announcement batches](#announcement-batches) below. With no date given the
-script targets **today minus `DEFAULT_DATE_LAG_DAYS`** (currently 5), rolled
-back to the most recent announcement day. The lag exists because arXiv's
-`submittedDate` filter only settles once a batch has been announced. The
-`DATE` environment variable is honoured as a fallback, which is how CI passes
-the date in.
+[Announcement batches](#announcement-batches) below. Run by hand with no date,
+the script falls back to **today minus `DEFAULT_DATE_LAG_DAYS`** (7), rolled
+back to the most recent announcement day, so a bare `python mt_arxiv_digest.py`
+lands on roughly the batch CI would be working on. The `DATE` environment
+variable is honoured as a fallback, which is how the workflow passes in the
+date `pick_batch.py` chose.
 
 `--print-date` resolves the date without loading the embedding model or the
-OpenAI client, so it returns instantly. It is a local convenience only: the
-workflow deliberately computes the same date in bash instead, because the
-already-sent guard has to run *before* `pip install`. That means the lag and
-the announcement-day rollback are implemented twice, in `resolve_target_date()` and in
-the "Determine DATE" step. **Change one and you must change the other.**
+OpenAI client, so it returns instantly.
+
+In CI the date does not come from this arithmetic at all - `pick_batch.py`
+picks the oldest batch still outstanding. See
+[Which batch gets sent](#which-batch-gets-sent).
 
 ---
 
@@ -105,6 +107,55 @@ One caveat: arXiv's range filter is inclusive at both ends and minute-granular,
 so batch edges are not perfectly clean. Measured over the week of 2026-09-14,
 the tiling accounts for 521 of 522 papers. The single straggler is submitted
 within a minute of a deadline.
+
+## Which batch gets sent
+
+`pick_batch.py` picks the **oldest** announcement batch that has aged at least
+`MIN_AGE_DAYS` and has no `mt_digest_md-<DATE>` artifact. It runs before
+`pip install`, so it and `arxiv_schedule.py` are standard library only.
+
+This replaced arithmetic of the form "today minus five, rolled back to an
+announcement day", which had two faults:
+
+- **It went quiet mid-week.** Friday and Saturday both roll back to Thursday,
+  so every Wednesday and Thursday run re-targeted a batch already sent. On
+  2026-09-23 all three runs resolved to 2026-09-17 and skipped, while five
+  announced batches sat unsent behind them.
+- **It lost batches.** The Sunday, Monday, Tuesday and Wednesday batches each
+  got exactly one run-day. If those three crons all failed, that batch was
+  never targeted again.
+
+Picking from what is outstanding fixes both: a run only idles when there is
+genuinely nothing to send, and a failed batch is simply still outstanding the
+next day.
+
+### Why `MIN_AGE_DAYS` is 7
+
+Five batches a week across seven run-days leaves two idle days whatever the
+value. All the age does is decide *which* days:
+
+| min age | issues arrive | idle |
+| ------- | ------------- | ---- |
+| 5 | Fri Sat Sun Mon Tue | Wed, Thu |
+| 6 | Sat Sun Mon Tue Wed | Thu, Fri |
+| **7** | **Sun Mon Tue Wed Thu** | **Fri, Sat** |
+
+Seven puts the quiet days on Friday and Saturday, the two days arXiv itself
+does not announce, so the newsletter keeps time with its source. The cost is
+that an issue covers papers announced a week earlier. Four days is the
+technical minimum (a Thursday batch is only announced on Sunday), so seven
+also leaves generous slack for arXiv holidays.
+
+### The lookback window
+
+`LOOKBACK_DAYS` is 14 and **must stay well inside the 30-day artifact
+retention** in `digest.yml`. "Sent" is inferred from the artifact, so once one
+expires its batch looks outstanding again - a lookback near the retention
+window would quietly re-send month-old issues.
+
+If the artifact API cannot be reached, `pick_batch.py` stands down rather than
+guessing. Treating an outage as "not sent" would re-send a batch subscribers
+already have.
 
 ## How papers are chosen
 

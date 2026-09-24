@@ -43,19 +43,26 @@ def emit(already_sent: bool) -> None:
     print(line)
 
 
-def main() -> None:
-    if len(sys.argv) != 2:
-        print("usage: check_already_sent.py YYYY-MM-DD", file=sys.stderr)
-        emit(False)
-        return
+class ArtifactCheckUnavailable(Exception):
+    """The API could not answer. Distinct from a confident "not sent"."""
 
-    date_str = sys.argv[1]
-    repo = os.getenv("GITHUB_REPOSITORY")     # e.g. "yukajii/mt-digest"
-    token = os.getenv("GITHUB_TOKEN")
+
+def already_sent(date_str: str, repo: str | None = None,
+                 token: str | None = None) -> bool:
+    """True when this date's digest artifact exists.
+
+    A run uploads mt_digest_md-<DATE> only after it has successfully built
+    *and* sent, so the artifact is a self-contained marker that the day's
+    digest went out.
+
+    Raises ArtifactCheckUnavailable when the API cannot be reached, so callers
+    can tell "definitely not sent" apart from "could not find out" - pick_batch
+    must not treat an outage as a licence to re-send an old batch.
+    """
+    repo = repo or os.getenv("GITHUB_REPOSITORY")
+    token = token or os.getenv("GITHUB_TOKEN")
     if not repo or not token:
-        # Outside Actions or missing token → can't check; let the run proceed.
-        emit(False)
-        return
+        raise ArtifactCheckUnavailable("GITHUB_REPOSITORY or GITHUB_TOKEN missing")
 
     name = f"mt_digest_md-{date_str}"
     url = f"{API}/repos/{repo}/actions/artifacts?name={name}&per_page=100"
@@ -67,18 +74,32 @@ def main() -> None:
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-    except Exception as e:  # network / API hiccup → don't block a real run
+    except Exception as e:
+        raise ArtifactCheckUnavailable(str(e)) from e
+
+    return any(a.get("name") == name and not a.get("expired", False)
+               for a in data.get("artifacts", []))
+
+
+def main() -> None:
+    if len(sys.argv) != 2:
+        print("usage: check_already_sent.py YYYY-MM-DD", file=sys.stderr)
+        emit(False)
+        return
+
+    date_str = sys.argv[1]
+    try:
+        sent = already_sent(date_str)
+    except ArtifactCheckUnavailable as e:
+        # Outside Actions, or a network hiccup -> don't block a real run.
         print(f"[warn] artifact check failed, proceeding anyway: {e}", file=sys.stderr)
         emit(False)
         return
 
-    for art in data.get("artifacts", []):
-        if art.get("name") == name and not art.get("expired", False):
-            print(f"✓ Digest for {date_str} already produced (artifact {name}) → skipping")
-            emit(True)
-            return
-
-    emit(False)
+    if sent:
+        print(f"Digest for {date_str} already produced "
+              f"(artifact mt_digest_md-{date_str}) - skipping")
+    emit(sent)
 
 
 if __name__ == "__main__":
