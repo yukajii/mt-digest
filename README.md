@@ -309,14 +309,20 @@ rather than the send date, which a freshly created email does not have yet -
 and exits quietly if any piece is missing, so a quiet batch or a skipped send
 never fails the build.
 
-**The workflow opens a pull request rather than pushing to the site's default
-branch.** That branch deploys, and publishing to a live domain on every send
-is a decision to make explicitly rather than inherit from a sync. Merging the
-PR is what publishes. To make it automatic instead, replace the branch-and-PR
-block with a commit straight onto the default branch.
+**The workflow commits straight to the site's default branch, which deploys.**
+It used to open a pull request instead, so that publishing to a live domain was
+a deliberate act rather than something inherited from wiring up a sync. A week
+of real running settled that: five issues a week meant five pull requests a
+week, and the site fell behind - six were sitting unmerged before anyone
+noticed. The e-mail already goes out unreviewed, so a review gate on the web
+copy was buying nothing.
 
-Requires `SITE_REPO_TOKEN`, a fine-grained PAT with Contents:write and
-Pull requests:write on `yukajii/yukajii-site`. Without it the step is a no-op.
+The push retries three times, rebasing on `master` between attempts. Three
+crons a day can overlap with each other or with a hand-run, and a rejected
+push should not fail an issue that has already been e-mailed.
+
+Requires `SITE_REPO_TOKEN`, a fine-grained PAT with Contents:write on
+`yukajii/yukajii-site`. Without it the step is a no-op.
 
 ## Canonical URLs
 
@@ -344,11 +350,11 @@ it: that link would return the reader to the page they are already on. The
 footer links to the newsletter root instead.
 
 **This is not done at send time.** When an issue sends, its site page does not
-exist yet - the workflow stages it as a pull request, and the URL 404s until
-that is merged. Redirecting an archive page at a missing page would be worse
-than doing nothing. So `set_canonical.py` runs separately and acts only once
-the page answers 200, which makes it self-healing: run it again after merging
-and it catches up on whatever is now live.
+exist yet: the commit lands moments later and Cloudflare still has to build,
+so the URL 404s for a few minutes. Redirecting an archive page at a missing
+page would be worse than doing nothing. So `set_canonical.py` runs separately
+and acts only once the page answers 200, which makes it self-healing: run it
+again later and it catches up on whatever is now live.
 
 It is read-only unless `--apply` is passed, and the workflow
 (`.github/workflows/set-canonical.yml`) is manual-only with `apply` defaulting
