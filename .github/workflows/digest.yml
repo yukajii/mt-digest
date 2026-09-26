@@ -136,6 +136,26 @@ jobs:
           BUTTONDOWN_TOKEN: ${{ secrets.BUTTONDOWN_TOKEN }}
         run: python send_digest.py "mt_digest_${DATE}.md"
 
+      # 6d. record that the e-mail went out ------------------------------
+      #     This artifact IS the already-sent marker check_already_sent.py
+      #     looks for, so it has to land immediately after the send and
+      #     before anything else can fail. It used to sit after the site
+      #     publish, which meant a failed publish left a sent issue looking
+      #     unsent: the queue would pick it up again and rebuild it three
+      #     times a day for the whole lookback window. No duplicate e-mail
+      #     (Buttondown dedupes on subject) but a lot of wasted work, and
+      #     the marker's one invariant - artifact means sent - was false.
+      #
+      #     A dry run must never publish it under this name, or a later
+      #     real run would skip the date.
+      - name: Upload Markdown digest
+        if: success() && steps.build.outputs.built == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: mt_digest${{ github.event.inputs.dry_run == 'true' && '_DRYRUN' || '' }}_md-${{ env.DATE }}
+          path: mt_digest_${{ env.DATE }}.md
+          retention-days: ${{ github.event.inputs.dry_run == 'true' && 7 || 30 }}
+
       # 6d. publish the issue to yukajii.com -----------------------------
       #     Needs SITE_REPO_TOKEN: a fine-grained PAT with Contents:write on
       #     yukajii/yukajii-site. Without it the step is a no-op.
@@ -152,6 +172,15 @@ jobs:
       #     Retries on a push race: three crons a day can overlap with each
       #     other or with a hand-run, and a rejected push should not fail an
       #     issue that has already been e-mailed.
+      #
+      #     If it still fails, the issue is e-mailed but missing from the site,
+      #     and the queue will NOT retry it - the sent-marker is already in
+      #     place by this point, which is deliberate. Recover by dispatching
+      #     the workflow with that explicit date: pick_batch honours an
+      #     explicit date even when already sent, send_digest no-ops on the
+      #     duplicate and rewrites the receipt, and this step then publishes.
+      #     A failed run is visible as a red run, and the 19:20 cron files an
+      #     issue.
       - name: Publish issue to yukajii.com
         if: success() && steps.build.outputs.built == 'true' && github.event.inputs.dry_run != 'true'
         env:
@@ -190,18 +219,6 @@ jobs:
 
           echo "::error::could not push the $DATE issue to the site after 3 attempts."
           exit 1
-
-      # 7. artefacts (private, 30 d retention) ---------------------------
-      # The `mt_digest_md-<DATE>` artifact IS the already-sent marker that
-      # check_already_sent.py looks for, so a dry run must never publish it
-      # under that name - doing so would make a later real run skip the date.
-      - name: Upload Markdown digest
-        if: success() && steps.build.outputs.built == 'true'
-        uses: actions/upload-artifact@v6
-        with:
-          name: mt_digest${{ github.event.inputs.dry_run == 'true' && '_DRYRUN' || '' }}_md-${{ env.DATE }}
-          path: mt_digest_${{ env.DATE }}.md
-          retention-days: ${{ github.event.inputs.dry_run == 'true' && 7 || 30 }}
 
       - name: Upload JSON log
         if: success() && steps.target.outputs.found == 'true' && steps.build.outcome == 'success'

@@ -321,6 +321,21 @@ The push retries three times, rebasing on `master` between attempts. Three
 crons a day can overlap with each other or with a hand-run, and a rejected
 push should not fail an issue that has already been e-mailed.
 
+**The sent-marker is uploaded before this step, not after.** The
+`mt_digest_md-<DATE>` artifact means "the e-mail went out", which is the
+irreversible part, so it has to land immediately after the send. It used to sit
+after the publish, which meant a failed publish left a sent issue looking
+unsent: the queue picked it up again and rebuilt it three times a day for the
+whole lookback window. Buttondown's duplicate detection stopped a second
+e-mail, but the marker's one invariant - artifact means sent - was false.
+
+The trade is that a publish failure is no longer retried automatically, since
+the batch is correctly marked done. Recover by dispatching the workflow with
+that explicit date: `pick_batch.py` honours an explicit date even when the
+batch is already sent, `send_digest.py` no-ops on the duplicate and rewrites
+the receipt, and the publish then succeeds. The failed run shows red, and the
+19:20 cron files a `digest-failure` issue.
+
 Requires `SITE_REPO_TOKEN`, a fine-grained PAT with Contents:write on
 `yukajii/yukajii-site`. Without it the step is a no-op.
 
