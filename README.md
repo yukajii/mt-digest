@@ -336,6 +336,34 @@ batch is already sent, `send_digest.py` no-ops on the duplicate and rewrites
 the receipt, and the publish then succeeds. The failed run shows red, and the
 19:20 cron files a `digest-failure` issue.
 
+**Pushing is not publishing.** Cloudflare still has to build, and a failed
+build is silent - the site just stops keeping up, which is how six issues once
+went unnoticed. So the step waits up to six minutes for the page to answer
+before calling itself done, and fails the run if it never does.
+
+The check measures **response size, not status code**. The site is a
+single-page app and answers 200 with a ~2 kB shell for any unknown path, so a
+status-code check would pass on a deploy that never happened. Measured live: a
+real issue page is 7-12 kB, the shell is 2,104 B, and the threshold is 4 kB.
+
+### Empty batches
+
+If arXiv returns no papers at all, no issue is written and no sent-marker
+exists - so `pick_batch.py` would pick that batch again on every run and
+**block every newer batch behind it** until it aged out of the lookback. One
+bare batch would stall the newsletter for a fortnight.
+
+The workflow writes a separate `mt_digest_empty-<DATE>` artifact, which
+`pick_batch.py` also treats as "dealt with". It is deliberately a different
+name from the sent-marker, because nothing was sent.
+
+It is only written once the batch is **three days old**. arXiv defers
+announcements for holidays and a deferred batch fills in a day or two, so a
+freshly empty batch stays queued and gets retried; only a persistently bare
+one is written off. An empty batch costs almost nothing to retry in the
+meantime - `mt_arxiv_digest.py` returns before the embedding step, so it is a
+fetch, not a full run.
+
 Requires `SITE_REPO_TOKEN`, a fine-grained PAT with Contents:write on
 `yukajii/yukajii-site`. Without it the step is a no-op.
 

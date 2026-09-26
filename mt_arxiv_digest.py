@@ -726,6 +726,16 @@ def main():
     papers = fetch_cscl(window)
     if not papers:
         print(f"No cs.CL papers in the {target_date} batch - nothing to send.")
+        # Still write a log. It is the payload the workflow uploads as the
+        # empty-batch marker, and it is the only record that this batch was
+        # looked at and found bare.
+        write_log(target_date, {
+            "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+            "target_date": target_date.isoformat(),
+            "batch_window_utc": [w.isoformat() for w in window],
+            "total_papers": 0,
+            "skipped": "arxiv returned no papers for this batch",
+        })
         return
 
     picks, ranking = rank_mt_papers(papers, ns.max_picks, ns.min_z, ns.min_picks)

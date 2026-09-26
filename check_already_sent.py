@@ -43,28 +43,12 @@ def emit(already_sent: bool) -> None:
     print(line)
 
 
-class ArtifactCheckUnavailable(Exception):
-    """The API could not answer. Distinct from a confident "not sent"."""
-
-
-def already_sent(date_str: str, repo: str | None = None,
-                 token: str | None = None) -> bool:
-    """True when this date's digest artifact exists.
-
-    A run uploads mt_digest_md-<DATE> only after it has successfully built
-    *and* sent, so the artifact is a self-contained marker that the day's
-    digest went out.
-
-    Raises ArtifactCheckUnavailable when the API cannot be reached, so callers
-    can tell "definitely not sent" apart from "could not find out" - pick_batch
-    must not treat an outage as a licence to re-send an old batch.
-    """
+def _artifact_exists(name: str, repo: str | None, token: str | None) -> bool:
     repo = repo or os.getenv("GITHUB_REPOSITORY")
     token = token or os.getenv("GITHUB_TOKEN")
     if not repo or not token:
         raise ArtifactCheckUnavailable("GITHUB_REPOSITORY or GITHUB_TOKEN missing")
 
-    name = f"mt_digest_md-{date_str}"
     url = f"{API}/repos/{repo}/actions/artifacts?name={name}&per_page=100"
     req = urllib.request.Request(url, headers={
         "Authorization": f"Bearer {token}",
@@ -79,6 +63,37 @@ def already_sent(date_str: str, repo: str | None = None,
 
     return any(a.get("name") == name and not a.get("expired", False)
                for a in data.get("artifacts", []))
+
+
+class ArtifactCheckUnavailable(Exception):
+    """The API could not answer. Distinct from a confident "not sent"."""
+
+
+def already_sent(date_str: str, repo: str | None = None,
+                 token: str | None = None) -> bool:
+    """True when this date's digest artifact exists.
+
+    A run uploads mt_digest_md-<DATE> immediately after a successful send, so
+    the artifact is a self-contained marker that the day's digest went out.
+
+    Raises ArtifactCheckUnavailable when the API cannot be reached, so callers
+    can tell "definitely not sent" apart from "could not find out" - pick_batch
+    must not treat an outage as a licence to re-send an old batch.
+    """
+    return _artifact_exists(f"mt_digest_md-{date_str}", repo, token)
+
+
+def marked_empty(date_str: str, repo: str | None = None,
+                 token: str | None = None) -> bool:
+    """True when this batch was recorded as having no papers at all.
+
+    Separate from already_sent on purpose: nothing was sent, so overloading
+    the sent-marker would be a lie. Without this a permanently empty batch
+    sits at the head of the queue and blocks every newer one behind it until
+    it ages out of the lookback window - the newsletter would stall for a
+    fortnight over a batch that has nothing in it.
+    """
+    return _artifact_exists(f"mt_digest_empty-{date_str}", repo, token)
 
 
 def main() -> None:

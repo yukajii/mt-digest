@@ -37,7 +37,8 @@ import sys
 
 from arxiv_schedule import (announcement_days_between, is_announcement_day,
                             previous_announcement_day)
-from check_already_sent import ArtifactCheckUnavailable, already_sent
+from check_already_sent import (ArtifactCheckUnavailable, already_sent,
+                                marked_empty)
 
 # One day: a batch announced at 20:00 ET on day A is queried on day A+1.
 # Announcement days are Sun-Thu, so A+1 lands on Mon-Fri - weekday issues,
@@ -118,7 +119,11 @@ def main() -> int:
 
     for day in candidates:
         try:
-            sent = already_sent(day.isoformat())
+            # Either marker means "dealt with". A batch with no papers at all
+            # gets its own marker rather than the sent one, because nothing
+            # was sent - but it still has to take the batch out of the queue,
+            # or it blocks every newer batch behind it.
+            sent = already_sent(day.isoformat()) or marked_empty(day.isoformat())
         except ArtifactCheckUnavailable as e:
             # Cannot tell. Stopping is the safe move: carrying on would treat
             # an API outage as "not sent" and re-send a batch subscribers

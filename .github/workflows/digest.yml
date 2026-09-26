@@ -111,9 +111,23 @@ jobs:
           python mt_arxiv_digest.py "$DATE"
           if [[ -f "mt_digest_${DATE}.md" ]]; then
             echo "built=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "built=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::the $DATE batch came back with no papers - nothing to send."
+
+          # An empty batch has to be taken out of the queue eventually, or it
+          # sits at the head of it and blocks every newer batch behind it. But
+          # not straight away: arXiv defers announcements for holidays, and a
+          # deferred batch fills in a day or two, so give it that long to
+          # appear before writing it off.
+          AGE=$(( ( $(date -u +%s) - $(date -u -d "$DATE" +%s) ) / 86400 ))
+          if [[ "$AGE" -ge 3 ]]; then
+            echo "giveup=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::the $DATE batch has been empty for $AGE days - marking it so the queue moves on."
           else
-            echo "built=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No paper in the $DATE batch cleared the relevance floor - nothing to send."
+            echo "::notice::the $DATE batch is only $AGE days old; leaving it queued in case arXiv deferred it."
           fi
 
       # 6b. dry run stops here, after printing what it would have sent.
@@ -128,6 +142,19 @@ jobs:
           echo "===== end ====="
           echo "===== run log ====="
           cat "logs/mt_digest_${DATE}.log"
+
+      # 6b2. write off a batch that is genuinely empty --------------------
+      #      A distinct artifact name, never the sent-marker: nothing was
+      #      sent. pick_batch treats either marker as "dealt with", so this is
+      #      what stops one bare batch stalling the newsletter for a
+      #      fortnight.
+      - name: Mark batch empty
+        if: success() && steps.build.outputs.giveup == 'true' && github.event.inputs.dry_run != 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: mt_digest_empty-${{ env.DATE }}
+          path: logs/mt_digest_${{ env.DATE }}.log
+          retention-days: 90
 
       # 6c. send ---------------------------------------------------------
       - name: Send digest
@@ -207,17 +234,41 @@ jobs:
           git add content/mt-digest
           git commit --quiet -m "Add MT digest issue for $DATE"
 
+          PUSHED=0
           for attempt in 1 2 3; do
             if git push --quiet origin HEAD:master; then
-              echo "::notice::published the $DATE issue to yukajii.com."
-              exit 0
+              PUSHED=1
+              break
             fi
             echo "[warn] push rejected on attempt $attempt; rebasing on master"
             git pull --rebase --quiet origin master || true
             sleep 5
           done
 
-          echo "::error::could not push the $DATE issue to the site after 3 attempts."
+          if [[ "$PUSHED" -ne 1 ]]; then
+            echo "::error::could not push the $DATE issue to the site after 3 attempts."
+            exit 1
+          fi
+
+          # Pushing is not publishing. Cloudflare still has to build, and a
+          # failed build is silent - the site just stops keeping up, which is
+          # how six issues once went unnoticed. So wait for the page to
+          # actually answer before calling this done.
+          #
+          # Size, not status code: the site is a single-page app and answers
+          # 200 with a ~2 kB shell for any unknown path. A status-code check
+          # here would pass on a deploy that never happened.
+          URL="https://yukajii.com/mt-digest/${DATE}/"
+          for i in $(seq 1 18); do
+            SIZE=$(curl -s -o /dev/null -w '%{size_download}' --max-time 20 "$URL" || echo 0)
+            if [[ "${SIZE:-0}" -gt 4096 ]]; then
+              echo "::notice::published the $DATE issue - $URL is live (${SIZE} bytes)."
+              exit 0
+            fi
+            sleep 20
+          done
+
+          echo "::error::pushed the $DATE issue but $URL never went live (last size ${SIZE:-0} bytes). Check the Cloudflare build."
           exit 1
 
       - name: Upload JSON log
