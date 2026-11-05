@@ -202,13 +202,17 @@ jobs:
       #
       #     If it still fails, the issue is e-mailed but missing from the site,
       #     and the queue will NOT retry it - the sent-marker is already in
-      #     place by this point, which is deliberate. Recover by dispatching
-      #     the workflow with that explicit date: pick_batch honours an
-      #     explicit date even when already sent, send_digest no-ops on the
-      #     duplicate and rewrites the receipt, and this step then publishes.
-      #     A failed run is visible as a red run, and the 19:20 cron files an
-      #     issue.
+      #     place by this point, which is deliberate. So a failure here files
+      #     an issue straight away rather than waiting for the 19:20 cron: no
+      #     later run would ever fail on this date's behalf.
+      #
+      #     Recover from what the failed run kept: the mt_digest_md-<DATE> and
+      #     mt_digest_log-<DATE> artifacts hold the exact e-mailed text, the
+      #     headline and the send receipt, and sync_to_site.py merges them.
+      #     Dispatching the workflow with that explicit date also publishes,
+      #     but it re-runs the LLM, so the web copy can differ from the e-mail.
       - name: Publish issue to yukajii.com
+        id: publish
         if: success() && steps.build.outputs.built == 'true' && github.event.inputs.dry_run != 'true'
         env:
           SITE_REPO_TOKEN: ${{ secrets.SITE_REPO_TOKEN }}
@@ -271,26 +275,41 @@ jobs:
           echo "::error::pushed the $DATE issue but $URL never went live (last size ${SIZE:-0} bytes). Check the Cloudflare build."
           exit 1
 
+      # Not gated on success(): the run that most needs its log is one where
+      # the publish failed, since the log and the receipt are what recovery
+      # is built from. The receipt is in here for the same reason.
       - name: Upload JSON log
-        if: success() && steps.target.outputs.found == 'true' && steps.build.outcome == 'success'
+        if: ${{ !cancelled() && steps.target.outputs.found == 'true' && steps.build.outcome == 'success' }}
         uses: actions/upload-artifact@v6
         with:
           name: mt_digest${{ github.event.inputs.dry_run == 'true' && '_DRYRUN' || '' }}_log-${{ env.DATE }}
-          path: logs/*.log
+          path: |
+            logs/*.log
+            logs/sent_*.json
           retention-days: ${{ github.event.inputs.dry_run == 'true' && 7 || 30 }}
 
       # 8. report a failure that the reattempts did not rescue ------------
-      #    Only the last cron of the day reports. An earlier run failing on
-      #    an arXiv 429 is exactly what the 11:20 and 15:20 reattempts are
-      #    for, so filing an issue then would be noise; if 15:20 has also
-      #    failed, the digest for this date is genuinely stranded.
+      #    Two cases. A build or send failure reports from the last cron of
+      #    the day only: an arXiv 429 at 11:20 is exactly what the reattempts
+      #    are for, so filing then would be noise. A publish failure reports
+      #    from whichever run hit it: the batch is already marked sent, so the
+      #    reattempts stand down and the 19:20 cron never sees it fail. Gating
+      #    this on the cron alone let the site fall two weeks behind in
+      #    October 2026 without a single issue being filed.
       - name: Open failure issue
-        if: failure() && github.event.schedule == '20 19 * * *'
+        if: failure() && (github.event.schedule == '20 19 * * *' || steps.publish.outcome == 'failure')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
         run: |
-          TITLE="MT Digest stranded for ${DATE:-unknown date}"
+          if [[ "$PUBLISH_OUTCOME" == "failure" ]]; then
+            TITLE="MT Digest not published to the site for ${DATE:-unknown date}"
+            SUMMARY="The \`${DATE:-unknown}\` issue was e-mailed but did not reach yukajii.com, and the queue will not retry it. Recovery is described above the publish step in digest.yml."
+          else
+            TITLE="MT Digest stranded for ${DATE:-unknown date}"
+            SUMMARY="All three scheduled attempts failed for \`${DATE:-unknown}\`."
+          fi
           EXISTING="$(gh issue list --state open --label digest-failure \
                         --search "$TITLE in:title" --json number --jq '.[0].number')"
           if [[ -n "$EXISTING" ]]; then
@@ -298,7 +317,5 @@ jobs:
           else
             gh label create digest-failure --color B60205 --force >/dev/null 2>&1 || true
             gh issue create --title "$TITLE" --label digest-failure \
-              --body "All three scheduled attempts failed for \`${DATE:-unknown}\`.
-
-          Last run: $RUN_URL"
+              --body "$(printf '%s\n\nLast run: %s' "$SUMMARY" "$RUN_URL")"
           fi
