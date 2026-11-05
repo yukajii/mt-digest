@@ -184,8 +184,11 @@ jobs:
           retention-days: ${{ github.event.inputs.dry_run == 'true' && 7 || 30 }}
 
       # 6d. publish the issue to yukajii.com -----------------------------
-      #     Needs SITE_REPO_TOKEN: a fine-grained PAT with Contents:write on
-      #     yukajii/yukajii-site. Without it the step is a no-op.
+      #     Needs SITE_DEPLOY_KEY: the private half of a write-enabled deploy
+      #     key on yukajii/yukajii-site. A key rather than a PAT because a PAT
+      #     expires, and when the old one did the site quietly fell two weeks
+      #     behind. A missing key fails the step for the same reason: a no-op
+      #     here looks exactly like a healthy run.
       #
       #     This commits straight to the site's default branch, which deploys.
       #     It used to open a pull request instead, so that publishing to a
@@ -215,15 +218,22 @@ jobs:
         id: publish
         if: success() && steps.build.outputs.built == 'true' && github.event.inputs.dry_run != 'true'
         env:
-          SITE_REPO_TOKEN: ${{ secrets.SITE_REPO_TOKEN }}
+          SITE_DEPLOY_KEY: ${{ secrets.SITE_DEPLOY_KEY }}
         run: |
-          if [[ -z "$SITE_REPO_TOKEN" ]]; then
-            echo "::notice::SITE_REPO_TOKEN is not set - skipping the site sync."
-            exit 0
+          if [[ -z "$SITE_DEPLOY_KEY" ]]; then
+            echo "::error::SITE_DEPLOY_KEY is not set - cannot publish the $DATE issue."
+            exit 1
           fi
 
-          git clone --depth 1 --quiet \
-            "https://x-access-token:${SITE_REPO_TOKEN}@github.com/yukajii/yukajii-site.git" site
+          # GitHub's published host key (api.github.com/meta), pinned so the
+          # connection never trusts whatever answers on first use.
+          install -d -m 700 ~/.ssh
+          ( umask 077; printf '%s\n' "$SITE_DEPLOY_KEY" > ~/.ssh/site_deploy )
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' \
+            > ~/.ssh/known_hosts_github
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/site_deploy -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts_github -o StrictHostKeyChecking=yes"
+
+          git clone --depth 1 --quiet git@github.com:yukajii/yukajii-site.git site
 
           python sync_to_site.py "$DATE" --out site/content/mt-digest
 
