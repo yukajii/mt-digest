@@ -369,8 +369,10 @@ one is written off. An empty batch costs almost nothing to retry in the
 meantime - `mt_arxiv_digest.py` returns before the embedding step, so it is a
 fetch, not a full run.
 
-Requires `SITE_REPO_TOKEN`, a fine-grained PAT with Contents:write on
-`yukajii/yukajii-site`. Without it the step is a no-op.
+Requires `SITE_DEPLOY_KEY`, the private half of a write-enabled deploy key on
+`yukajii/yukajii-site`. Without it the step fails rather than skipping, because
+a skip looks exactly like a healthy run. It replaced a PAT, whose expiry left
+the site two weeks behind in October 2026.
 
 ## Canonical URLs
 
