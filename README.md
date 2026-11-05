@@ -330,11 +330,16 @@ whole lookback window. Buttondown's duplicate detection stopped a second
 e-mail, but the marker's one invariant - artifact means sent - was false.
 
 The trade is that a publish failure is no longer retried automatically, since
-the batch is correctly marked done. Recover by dispatching the workflow with
-that explicit date: `pick_batch.py` honours an explicit date even when the
-batch is already sent, `send_digest.py` no-ops on the duplicate and rewrites
-the receipt, and the publish then succeeds. The failed run shows red, and the
-19:20 cron files a `digest-failure` issue.
+the batch is correctly marked done. The failed run shows red and files a
+`digest-failure` issue straight away, because no later run will fail on that
+date's behalf.
+
+Recover from what the failed run kept: its `mt_digest_md-<DATE>` and
+`mt_digest_log-<DATE>` artifacts hold the exact e-mailed text, the headline and
+the send receipt, which is all `sync_to_site.py` needs. Dispatching the workflow
+with that explicit date also works (`pick_batch.py` honours it even when the
+batch is already sent, and `send_digest.py` no-ops on the duplicate), but it
+re-runs the LLM, so the web copy can differ from what subscribers received.
 
 **Pushing is not publishing.** Cloudflare still has to build, and a failed
 build is silent - the site just stops keeping up, which is how six issues once
